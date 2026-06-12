@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables / secrets
+.env
+.env.*
+
+# Data files
+data/
+datasets/
+Datasets/
+*.csv
+*.parquet
+*.feather
+*.h5
+*.db
+*.sqlite
+*.npy
+*.npz
+*.edf
+*.fif
+*.set
+*.mat
+
+# Model checkpoints
+checkpoints/
+Checkpoints/
+pretrained-models/
+pretrained_weights/
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.joblib
+*.pkl
+
+# Cache files
+*_cache.json
+*.cache
+
+# Logs
+logs/
+*.log
+
+# IDE files
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
