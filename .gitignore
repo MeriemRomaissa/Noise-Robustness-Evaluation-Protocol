@@ -72,3 +72,14 @@ build/
 dist/
 *.egg-info/
 
+
+# EEG-FM large files excluded from GitHub
+*.h5
+*.pth
+*.ckpt
+*.edf
+*.zip
+outputs/
+task_logs/
+__pycache__/
+*.pyc

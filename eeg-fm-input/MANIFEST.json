@@ -1,0 +1,138 @@
+{
+  "export_name": "eeg-fm-input-github",
+  "created_from": "/nicoletye/workspace/unified_tuab",
+  "large_files_excluded": [
+    "*.h5",
+    "*.pth",
+    "*.ckpt",
+    "*.edf"
+  ],
+  "files": [
+    {
+      "relative_path": "BIOT/run_biot_unified60_meriem_strict_job.py",
+      "original_source_path": "scripts/eegfm_adapters/run_biot_unified60_meriem_strict_job.py",
+      "file_size": 9518,
+      "sha256": "9afa89f367fee1a72b496dd74322d08e57619e032e5c0e58b8be8f817ce198bd"
+    },
+    {
+      "relative_path": "CBraMod/run_cbramod_unified60_meriem_strict_job.py",
+      "original_source_path": "scripts/eegfm_adapters/run_cbramod_unified60_meriem_strict_job.py",
+      "file_size": 3622,
+      "sha256": "60f024c4e03fa5e1b7b6ee64a455c23983323ea7463328dbe08ddad9519270f7"
+    },
+    {
+      "relative_path": "CBraMod_CSBrain_CodeBrain_shared/eegfm_small_subset_train_worker_remaining_models.py",
+      "original_source_path": "scripts/eegfm_adapters/eegfm_small_subset_train_worker_remaining_models.py",
+      "file_size": 34023,
+      "sha256": "24a48380111e68db62cd6bcc8df47783e85432ad132b53eab8d9b769f3767aa6"
+    },
+    {
+      "relative_path": "CBraMod_CSBrain_CodeBrain_shared/finetune_strategy_utils_remaining_models.py",
+      "original_source_path": "scripts/eegfm_adapters/finetune_strategy_utils_remaining_models.py",
+      "file_size": 24992,
+      "sha256": "20fcdb7ec06cee28cb50e81e4dc815457326fd50e7272512126ec0428c4f3d25"
+    },
+    {
+      "relative_path": "CSBrain/run_csbrain_unified60_meriem_strict_job.py",
+      "original_source_path": "scripts/eegfm_adapters/run_csbrain_unified60_meriem_strict_job.py",
+      "file_size": 3622,
+      "sha256": "bc83246f817705f215390f2f804d040e03eff67a290a0a8057e6e3063cbd0984"
+    },
+    {
+      "relative_path": "CodeBrain/run_codebrain_unified60_meriem_strict_job.py",
+      "original_source_path": "scripts/eegfm_adapters/run_codebrain_unified60_meriem_strict_job.py",
+      "file_size": 3971,
+      "sha256": "7cd68186851049009d38d0b9bbfffbfb041928cafb6b0f70c0646e8d33877208"
+    },
+    {
+      "relative_path": "EEGPT/run_eegpt_unified60_meriem_strict_job.py",
+      "original_source_path": "scripts/eegfm_adapters/run_eegpt_unified60_meriem_strict_job.py",
+      "file_size": 9889,
+      "sha256": "c7f8c0da9466d35c636f0f4c1564081df6f41cf38da91fc007db92425cb727ba"
+    },
+    {
+      "relative_path": "Labram/run_labram_full_unified60_3strategy_4seed_epoch50_4gpu_task.sh",
+      "original_source_path": "scripts/eegfm_adapters/run_labram_full_unified60_3strategy_4seed_epoch50_4gpu_task.sh",
+      "file_size": 5505,
+      "sha256": "8f127cf6781039b52ce5f5a2a8f376847690e9ca71d0175782f6998928dc9976"
+    },
+    {
+      "relative_path": "Labram/run_labram_full_unified60_strategy_seeded_epoch50.py",
+      "original_source_path": "scripts/eegfm_adapters/run_labram_full_unified60_strategy_seeded_epoch50.py",
+      "file_size": 8178,
+      "sha256": "a387e022ae7b1630e16ae161f01ce465943777cb26a4a207771f934f4d881de4"
+    },
+    {
+      "relative_path": "Labram/summarize_labram_full_unified60_3strategy_4seed_epoch50.py",
+      "original_source_path": "scripts/eegfm_adapters/summarize_labram_full_unified60_3strategy_4seed_epoch50.py",
+      "file_size": 7598,
+      "sha256": "09fe9a6cab725ee18b9e524f9d6c98e507a25e134f95587a6c43cc6e80dd069c"
+    },
+    {
+      "relative_path": "Labram_BIOT_EEGPT_shared/eegfm_small_subset_train_worker.py",
+      "original_source_path": "scripts/eegfm_adapters/eegfm_small_subset_train_worker.py",
+      "file_size": 26017,
+      "sha256": "6c173588804ac16a6d514de07eb7a554cda36221a55df1fda88c304f52cb3bd4"
+    },
+    {
+      "relative_path": "Labram_BIOT_EEGPT_shared/eegfm_tiny_train_worker.py",
+      "original_source_path": "scripts/eegfm_adapters/eegfm_tiny_train_worker.py",
+      "file_size": 25432,
+      "sha256": "3e015be61b47a7e1281a1060c41dbc818ebd13d9f71e35ca4eebc445ebd25525"
+    },
+    {
+      "relative_path": "Labram_BIOT_EEGPT_shared/finetune_strategy_utils.py",
+      "original_source_path": "scripts/eegfm_adapters/finetune_strategy_utils.py",
+      "file_size": 24992,
+      "sha256": "20fcdb7ec06cee28cb50e81e4dc815457326fd50e7272512126ec0428c4f3d25"
+    },
+    {
+      "relative_path": "README.md",
+      "original_source_path": "generated export README",
+      "file_size": 2656,
+      "sha256": "110b99303ec7d1917053183fde58eee155ae17fca2f68c62779fdf0be9af0479"
+    },
+    {
+      "relative_path": "subset_training/README.md",
+      "original_source_path": "reports/all6_unified60_subset_epoch15_5seed_1gpu_dev_v1/README.md",
+      "file_size": 4710,
+      "sha256": "e2e86f557a7c98067f73f85bf260622b475cfbd9f5606a7ceae5cd6b4fee9061"
+    },
+    {
+      "relative_path": "subset_training/THREE_GPU_RUNBOOK.md",
+      "original_source_path": "reports/all6_unified60_subset_epoch15_5seed_1gpu_dev_v1/THREE_GPU_RUNBOOK.md",
+      "file_size": 3584,
+      "sha256": "063d822a7e91ed1ce85065ccfb593f7c4549036cfb38196b5a6e624228b0629d"
+    },
+    {
+      "relative_path": "subset_training/all6_fixed_subset_seed42_index.npz",
+      "original_source_path": "reports/all6_unified60_subset_epoch15_5seed_1gpu_dev_v1/all6_fixed_subset_seed42_index.npz",
+      "file_size": 24605,
+      "sha256": "7a049f52d1ec5693cfc81f3cf149fcfbd2296168e584f0ed7273fa7808c1a72f"
+    },
+    {
+      "relative_path": "subset_training/canonical_h5_labram_exact_original_processed_split_index.csv",
+      "original_source_path": "reports/labram_exact_original_processed_split/canonical_h5_labram_exact_original_processed_split_index.csv",
+      "file_size": 124380766,
+      "sha256": "00a4cd73f7b0729a552ed63a8128215a156997f255b9180883ff09af3855302b"
+    },
+    {
+      "relative_path": "subset_training/monitor_all6_unified60_subset_epoch15_5seed_3gpu_dev.sh",
+      "original_source_path": "scripts/eegfm_adapters/monitor_all6_unified60_subset_epoch15_5seed_3gpu_dev.sh",
+      "file_size": 3342,
+      "sha256": "927abbd6040f8dfc15cfa113bc548aef0df324a5e84889859b57cab2ced98b64"
+    },
+    {
+      "relative_path": "subset_training/run_all6_unified60_subset_epoch15_5seed_3gpu_dev_parallel.sh",
+      "original_source_path": "scripts/eegfm_adapters/run_all6_unified60_subset_epoch15_5seed_3gpu_dev_parallel.sh",
+      "file_size": 13108,
+      "sha256": "ffb0fea2d604896cff02c4e7f12bdacea5b059e5d1ef3070969aaaa2d9dfbced"
+    },
+    {
+      "relative_path": "subset_training/script_reference_audit.md",
+      "original_source_path": "reports/all6_unified60_subset_epoch15_5seed_1gpu_dev_v1/script_reference_audit.md",
+      "file_size": 6533,
+      "sha256": "49dc18e3426068821705873808a9cfabc7b9a20c2de2740958918b899de8b4ff"
+    }
+  ]
+}
