@@ -1,6 +1,6 @@
-# Meriem Reproduction Package
+# Unified EEG-FM Benchmark Reproduction Package
 
-This package is a source-only reproduction bundle for the unified TUAB preprocessing and EEG-FM benchmark workflow. It contains scripts and documentation only. It does not include raw EDF files, H5 files, NPZ data, checkpoints, processed PKL files, or training outputs.
+This reproduction package is a source-only bundle for the unified TUAB preprocessing and EEG-FM benchmark workflow. It contains scripts and documentation only. It does not include raw EDF files, H5 files, NPZ data, checkpoints, processed PKL files, or training outputs.
 
 The workflow has three separate tracks. They should not be mixed.
 
@@ -93,7 +93,7 @@ scripts/eegfm_adapters/create_tuab_option1_raw_edf_symlink_subset.py
 scripts/eegfm_adapters/validate_tuab_option1_subset_artifacts.py
 scripts/eegfm_adapters/*_option1_make_tuab_wrapper.py
 scripts/eegfm_adapters/build_option1_preprocessing_matrix.py
-scripts/eegfm_adapters/audit_labram_original_vs_unified_full_for_meriem.py
+scripts/eegfm_adapters/audit_labram_original_vs_unified_full.py
 ```
 
 LaBraM notch-ablation subset scripts:

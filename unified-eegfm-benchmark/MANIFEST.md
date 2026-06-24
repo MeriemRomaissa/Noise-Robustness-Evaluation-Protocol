@@ -33,7 +33,7 @@ scripts/eegfm_adapters/
 Included files:
 
 ```text
-scripts/eegfm_adapters/audit_labram_original_vs_unified_full_for_meriem.py
+scripts/eegfm_adapters/audit_labram_original_vs_unified_full.py
 scripts/eegfm_adapters/biot_option1_make_tuab_wrapper.py
 scripts/eegfm_adapters/build_all6_unified60_subset_epoch15_fixed_index.py
 scripts/eegfm_adapters/build_labram_exact_subset_manifest.py
