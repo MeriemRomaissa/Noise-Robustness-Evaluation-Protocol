@@ -730,8 +730,6 @@ scripts/eegfm_adapters/run_eegpt_unified60_ablation_seed42.py
 scripts/eegfm_adapters/run_biot_unified60_ablation_seed42.py
 scripts/eegfm_adapters/run_cbramod_unified60_ablation_seed42.py
 scripts/eegfm_adapters/run_codebrain_unified60_ablation_seed42.py
-scripts/eegfm_adapters/build_csbrain_forensic_audit_seed42.py
-scripts/eegfm_adapters/run_csbrain_smoke_ablation_seed42.py
 scripts/eegfm_adapters/run_csbrain_final_ablation_seed42_1gpu.py
 ```
 
