@@ -40,6 +40,9 @@ def main():
                         help='datasets_dir')
     parser.add_argument('--num_of_classes', type=int, default=2, help='number of classes')
     parser.add_argument('--model_dir', type=str, default='/data/wjq/models_weights/Big/BigFaced', help='model_dir')
+    parser.add_argument('--log_dir', type=str, default='', help='directory for TensorBoard logs')
+    parser.add_argument('--output_dir', type=str, default='', help='directory for log.txt and checkpoints')
+    parser.add_argument('--save_ckpt_freq', type=int, default=0, help='also save checkpoint-N.pth every N epochs (0=disabled)')
     """############ Downstream dataset settings ############"""
 
     parser.add_argument('--num_workers', type=int, default=16, help='num_workers')

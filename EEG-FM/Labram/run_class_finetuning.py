@@ -499,6 +499,8 @@ def main(args, ds_init):
     start_time = time.time()
     max_accuracy = 0.0
     max_accuracy_test = 0.0
+    max_roc_auc = 0.0
+    max_roc_auc_test = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -524,15 +526,24 @@ def main(args, ds_init):
             test_stats = evaluate(data_loader_test, model, device, header='Test:', ch_names=ch_names, metrics=metrics, is_binary=args.nb_classes == 1)
             print(f"Accuracy of the network on the {len(dataset_test)} test EEG: {test_stats['accuracy']:.2f}%")
             
-            if max_accuracy < val_stats["accuracy"]:
-                max_accuracy = val_stats["accuracy"]
-                if args.output_dir and args.save_ckpt:
-                    utils.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
-                max_accuracy_test = test_stats["accuracy"]
-
-            print(f'Max accuracy val: {max_accuracy:.2f}%, max accuracy test: {max_accuracy_test:.2f}%')
+            if args.nb_classes == 1:  # binary: select on ROC-AUC
+                if max_roc_auc < val_stats["roc_auc"]:
+                    max_roc_auc = val_stats["roc_auc"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+                    max_roc_auc_test = test_stats["roc_auc"]
+                print(f'Max ROC-AUC val: {max_roc_auc:.4f}, max ROC-AUC test: {max_roc_auc_test:.4f}')
+            else:  # multiclass: select on accuracy
+                if max_accuracy < val_stats["accuracy"]:
+                    max_accuracy = val_stats["accuracy"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+                    max_accuracy_test = test_stats["accuracy"]
+                print(f'Max accuracy val: {max_accuracy:.2f}%, max accuracy test: {max_accuracy_test:.2f}%')
             if log_writer is not None:
                 for key, value in val_stats.items():
                     if key == 'accuracy':

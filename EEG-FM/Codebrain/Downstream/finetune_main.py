@@ -39,6 +39,11 @@ def main():
     parser.add_argument('--log_dir', type=str,
                         default='',
                         help='log_dir')
+    parser.add_argument('--output_dir', type=str,
+                        default='',
+                        help='directory for log.txt and checkpoints')
+    parser.add_argument('--save_ckpt_freq', type=int, default=0,
+                        help='also save checkpoint-N.pth every N epochs (0=disabled)')
 
     parser.add_argument('--num_workers', type=int, default = 16, help='num_workers')
     parser.add_argument('--label_smoothing', type=float, default=0.1, help='label_smoothing')
@@ -60,6 +65,7 @@ def main():
     params = parser.parse_args()
     params.model_dir = params.model_dir + params.downstream_dataset + '/'
     params.log_dir = params.log_dir + params.downstream_dataset + '/'
+    params.output_dir = params.output_dir + params.downstream_dataset + '/' if params.output_dir else ''
     current_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     params.file_name = str(params.log_dir) + str(current_time) + "_" + str(params.cuda) + ".txt"
     print(params)

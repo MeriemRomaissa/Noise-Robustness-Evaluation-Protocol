@@ -6,12 +6,12 @@ import torch
 from tqdm import tqdm
 import numpy as np
 import torch.nn as nn
+from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score
 
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.strategies import DDPStrategy
 from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pyhealth.metrics import multiclass_metrics_fn
 
 from model import (
@@ -54,13 +54,29 @@ class LitModel_finetune(pl.LightningModule):
             gt = np.append(gt, out[1])
 
         result = np.concatenate(result, axis=0)
-        result = multiclass_metrics_fn(
+        metrics = multiclass_metrics_fn(
             gt, result, metrics=["accuracy", "cohen_kappa", "f1_weighted"]
         )
-        self.log("val_acc", result["accuracy"], sync_dist=True)
-        self.log("val_cohen", result["cohen_kappa"], sync_dist=True)
-        self.log("val_f1", result["f1_weighted"], sync_dist=True)
-        print(result)
+        self.log("val_acc", metrics["accuracy"], sync_dist=True)
+        self.log("val_cohen", metrics["cohen_kappa"], sync_dist=True)
+        self.log("val_f1", metrics["f1_weighted"], sync_dist=True)
+        if result.shape[1] == 2:  # binary classification
+            scores = result[:, 1]
+            preds = result.argmax(axis=1)
+            roc_auc = roc_auc_score(gt, scores)
+            pr_auc = average_precision_score(gt, scores)
+            bal_acc = balanced_accuracy_score(gt, preds)
+            self.log("val_roc_auc", roc_auc, sync_dist=True)
+            self.log("val_pr_auc", pr_auc, sync_dist=True)
+            self.log("val_balanced_acc", bal_acc, sync_dist=True)
+            metrics.update({"roc_auc": roc_auc, "pr_auc": pr_auc, "balanced_accuracy": bal_acc})
+        print(metrics)
+        if self.args.output_dir:
+            import json
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            log_stats = {"epoch": self.current_epoch, **{f"val_{k}": v for k, v in metrics.items()}}
+            with open(os.path.join(self.args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                f.write(json.dumps(log_stats) + "\n")
 
     def test_step(self, batch, batch_idx):
         X, y = batch
@@ -78,14 +94,29 @@ class LitModel_finetune(pl.LightningModule):
             gt = np.append(gt, out[1])
 
         result = np.concatenate(result, axis=0)
-        result = multiclass_metrics_fn(
+        metrics = multiclass_metrics_fn(
             gt, result, metrics=["accuracy", "cohen_kappa", "f1_weighted"]
         )
-        self.log("test_acc", result["accuracy"], sync_dist=True)
-        self.log("test_cohen", result["cohen_kappa"], sync_dist=True)
-        self.log("test_f1", result["f1_weighted"], sync_dist=True)
-
-        return result
+        self.log("test_acc", metrics["accuracy"], sync_dist=True)
+        self.log("test_cohen", metrics["cohen_kappa"], sync_dist=True)
+        self.log("test_f1", metrics["f1_weighted"], sync_dist=True)
+        if result.shape[1] == 2:  # binary classification
+            scores = result[:, 1]
+            preds = result.argmax(axis=1)
+            roc_auc = roc_auc_score(gt, scores)
+            pr_auc = average_precision_score(gt, scores)
+            bal_acc = balanced_accuracy_score(gt, preds)
+            self.log("test_roc_auc", roc_auc, sync_dist=True)
+            self.log("test_pr_auc", pr_auc, sync_dist=True)
+            self.log("test_balanced_acc", bal_acc, sync_dist=True)
+            metrics.update({"roc_auc": roc_auc, "pr_auc": pr_auc, "balanced_accuracy": bal_acc})
+        if self.args.output_dir:
+            import json
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            log_stats = {"epoch": "test", **{f"test_{k}": v for k, v in metrics.items()}}
+            with open(os.path.join(self.args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                f.write(json.dumps(log_stats) + "\n")
+        return metrics
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
@@ -284,10 +315,6 @@ def supervised(args):
         version=version,
         name="log",
     )
-    early_stop_callback = EarlyStopping(
-        monitor="val_cohen", patience=5, verbose=False, mode="max"
-    )
-
     trainer = pl.Trainer(
         devices=[0],
         accelerator="gpu",
@@ -297,7 +324,6 @@ def supervised(args):
         enable_checkpointing=True,
         logger=logger,
         max_epochs=args.epochs,
-        callbacks=[early_stop_callback],
     )
 
     # train the model
@@ -347,6 +373,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrain_model_path", type=str, default="", help="pretrained model path"
     )
+    parser.add_argument("--output_dir", type=str, default="", help="directory for log.txt and checkpoints")
     args = parser.parse_args()
     print(args)
 
