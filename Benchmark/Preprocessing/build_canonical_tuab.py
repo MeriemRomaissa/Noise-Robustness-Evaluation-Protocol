@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-build_canonical_tuab.py
-=======================
-Stage 1 of the unified TUAB preprocessing pipeline.
+"""Stage 1 of the unified TUAB preprocessing pipeline.
 
 Reads raw TUAB v3.0.1 EDF files, applies unified preprocessing, and writes
 a single canonical HDF5 file:
@@ -26,9 +23,10 @@ Architecture decisions enforced here:
   - Adapters are not called here; they run later at load time
 
 Usage:
-    python build_canonical_tuab.py --edf_root /nicoletye/workspace/tuh_data/TUAB/v3.0.1/edf \
-                                   --output    /nicoletye/workspace/unified_tuab/data/canonical_tuab.h5 \
-                                   --log_dir   /nicoletye/workspace/unified_tuab/logs/build
+    python build_canonical_tuab.py --edf_root /path/to/TUAB/edf \
+                                   --output /path/to/canonical_tuab.h5 \
+                                   --log_dir /path/to/logs \
+                                   --report_dir /path/to/reports
 
     # Force rebuild of an existing file:
     python build_canonical_tuab.py ... --overwrite
@@ -37,6 +35,8 @@ Usage:
     python build_canonical_tuab.py ... --dry_run
 """
 
+from __future__ import annotations
+
 import argparse
 import csv
 import hashlib
@@ -44,15 +44,26 @@ import logging
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import h5py
-import mne
 import numpy as np
-from tqdm import tqdm
 
-# ── Preprocessing constants ────────────────────────────────────────────────────
+try:
+    import h5py
+except ModuleNotFoundError:
+    h5py = None
+try:
+    import mne
+except ModuleNotFoundError:
+    mne = None
+try:
+    from tqdm import tqdm
+except ModuleNotFoundError:
+    tqdm = None
+
+# Reproducibility constants shared by every recording.
 SFREQ          = 200          # Hz — target sampling rate
 BANDPASS_HZ    = (0.1, 75.0) # (l_freq, h_freq)
 NOTCH_HZ       = 60.0        # power-line frequency for US recordings
@@ -75,9 +86,10 @@ META_FIELDS    = {
 STR_FIELDS = {"sample_id", "subject_id", "recording_id", "source_path", "split", "raw_hash"}
 
 # Suppress MNE's verbose output globally; we do our own logging
-mne.set_log_level("ERROR")
+if mne is not None:
+    mne.set_log_level("ERROR")
 
-# ── Canonical 23-channel order ─────────────────────────────────────────────────
+# Channel order stored in every canonical window.
 CANONICAL_CHANNELS = [
     "FP1", "FP2", "F3", "F4", "C3", "C4", "P3", "P4",
     "O1",  "O2",  "F7", "F8", "T3", "T4", "T5", "T6",
@@ -133,7 +145,7 @@ def _normalise_channel_name(raw_name: str) -> str | None:
     return None
 
 
-# ── Label / split utilities ────────────────────────────────────────────────────
+# Dataset labels and upstream split names come from the TUAB directory layout.
 def _label_from_path(path: Path) -> int:
     """Derive binary label from EDF file path (normal=0, abnormal=1)."""
     parts = {p.lower() for p in path.parts}
@@ -174,66 +186,106 @@ def _recording_id_from_path(path: Path) -> str:
     return path.stem
 
 
-# ── SHA-256 hash ───────────────────────────────────────────────────────────────
+# Raw hashes make duplicate and provenance checks possible after preprocessing.
 def _sha256_of_array(arr: np.ndarray) -> str:
     """Return hex SHA-256 of the raw float32 bytes of arr."""
     return hashlib.sha256(arr.astype(np.float32).tobytes()).hexdigest()
 
 
-# ── EDF processing ─────────────────────────────────────────────────────────────
-def process_edf(
-    edf_path: Path,
-    logger: logging.Logger,
-) -> tuple[list[np.ndarray], list[dict], list[str]] | None:
-    """
-    Load one EDF file, apply unified preprocessing, segment into 10 s windows.
+# One recording is filtered, resampled, windowed, and returned for H5 writing.
+class RecordingProcessingError(RuntimeError):
+    """Carry one structured EDF failure reason into the manifest reports."""
 
-    Returns:
-        (windows, metadatas, missing_channels) on success
-        None on unrecoverable error (file is logged and skipped)
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 
-    windows      : list of (23, 2000) float32 arrays in µV
-    metadatas    : list of dicts with segment-level metadata
-    missing_channels : list of canonical channel names that were zero-padded
-    """
-    try:
-        raw = mne.io.read_raw_edf(str(edf_path), preload=True, verbose=False)
-    except Exception as exc:
-        logger.warning("SKIP corrupt/unreadable EDF: %s  error=%s", edf_path, exc)
-        return None
 
-    # ── Channel mapping ────────────────────────────────────────────────────────
-    edf_channels = raw.ch_names
-    canon_to_edf: dict[str, str | None] = {c: None for c in CANONICAL_CHANNELS}
-    for edf_ch in edf_channels:
-        canon = _normalise_channel_name(edf_ch)
-        if canon and canon_to_edf.get(canon) is None:
-            canon_to_edf[canon] = edf_ch
-
-    missing_channels = [c for c, v in canon_to_edf.items() if v is None]
+def process_edf(edf_path: Path, logger: logging.Logger) -> "ProcessedFile":
+    """Apply the canonical signal protocol to one EDF recording."""
+    label = _label_from_path(edf_path)
+    split = _split_from_path(edf_path)
+    raw = read_edf_recording(edf_path)
+    channel_map = match_canonical_channels(raw.ch_names)
+    missing_channels = [
+        name for name, edf_name in channel_map.items() if edf_name is None
+    ]
     if missing_channels:
         logger.info(
             "MISSING_CHANNELS file=%s missing=%s (zero-padded)",
-            edf_path.name, missing_channels,
+            edf_path.name,
+            missing_channels,
         )
 
-    # Pick only found channels for MNE processing
-    found_edf_names = [v for v in canon_to_edf.values() if v is not None]
-    if found_edf_names:
-        try:
-            raw.pick_channels(found_edf_names, ordered=False)
-        except Exception as exc:
-            logger.warning("SKIP channel-pick error: %s  error=%s", edf_path, exc)
-            return None
+    keep_available_channels(raw, channel_map, edf_path)
+    warn_for_long_recording(raw, edf_path, logger)
+    apply_canonical_filters(raw, edf_path)
+    canonical_matrix = assemble_canonical_matrix(raw, channel_map, edf_path)
+    windows, metadata = segment_canonical_recording(
+        canonical_matrix,
+        edf_path,
+        split,
+        label,
+        missing_channels,
+        logger,
+    )
+    return ProcessedFile(split, label, windows, metadata, missing_channels)
 
-    # ── Preprocessing ──────────────────────────────────────────────────────────
-    # Warn for unusually large files before long operations
-    duration_s = raw.times[-1]
-    if duration_s > 3600:
-        logger.warning("LARGE_EDF file=%s duration=%.1fs", edf_path.name, duration_s)
 
+def read_edf_recording(edf_path: Path):
+    """Read one EDF into memory or raise a structured corruption error."""
     try:
-        # Bandpass 0.1–75 Hz
+        return mne.io.read_raw_edf(str(edf_path), preload=True, verbose=False)
+    except Exception as exc:
+        raise RecordingProcessingError(
+            "unreadable_edf",
+            f"could not read EDF: {exc}",
+        ) from exc
+
+
+def match_canonical_channels(edf_channel_names: list[str]) -> dict[str, str | None]:
+    """Map available EDF labels onto the fixed 23-channel canonical order."""
+    channel_map: dict[str, str | None] = {
+        name: None for name in CANONICAL_CHANNELS
+    }
+    for edf_name in edf_channel_names:
+        canonical_name = _normalise_channel_name(edf_name)
+        if canonical_name and channel_map.get(canonical_name) is None:
+            channel_map[canonical_name] = edf_name
+    return channel_map
+
+
+def keep_available_channels(raw, channel_map: dict[str, str | None], edf_path: Path) -> None:
+    """Restrict MNE processing to canonical channels present in the recording."""
+    available = [name for name in channel_map.values() if name is not None]
+    if not available:
+        raise RecordingProcessingError(
+            "no_canonical_channels",
+            f"{edf_path.name} contains none of the 23 canonical channels",
+        )
+    try:
+        raw.pick_channels(available, ordered=False)
+    except Exception as exc:
+        raise RecordingProcessingError(
+            "channel_pick_error",
+            f"could not select canonical channels in {edf_path.name}: {exc}",
+        ) from exc
+
+
+def warn_for_long_recording(raw, edf_path: Path, logger: logging.Logger) -> None:
+    """Flag recordings likely to require unusually long preprocessing time."""
+    duration_seconds = float(raw.times[-1])
+    if duration_seconds > 3600:
+        logger.warning(
+            "LARGE_EDF file=%s duration=%.1fs",
+            edf_path.name,
+            duration_seconds,
+        )
+
+
+def apply_canonical_filters(raw, edf_path: Path) -> None:
+    """Band-pass, remove 60 Hz line noise, and resample to 200 Hz."""
+    try:
         raw.filter(
             l_freq=BANDPASS_HZ[0],
             h_freq=BANDPASS_HZ[1],
@@ -241,96 +293,98 @@ def process_edf(
             fir_window="hamming",
             verbose=False,
         )
-        # Notch at 60 Hz (US power-line)
-        raw.notch_filter(
-            freqs=NOTCH_HZ,
-            method="fir",
-            verbose=False,
-        )
-        # Resample to 200 Hz
+        raw.notch_filter(freqs=NOTCH_HZ, method="fir", verbose=False)
         if abs(raw.info["sfreq"] - SFREQ) > 0.1:
             raw.resample(SFREQ, verbose=False)
     except Exception as exc:
-        logger.warning("SKIP preprocessing error: %s  error=%s", edf_path, exc)
-        return None
+        raise RecordingProcessingError(
+            "signal_preprocessing_error",
+            f"filtering or resampling failed for {edf_path.name}: {exc}",
+        ) from exc
 
-    # ── Build canonical data matrix (23, T) ───────────────────────────────────
+
+def assemble_canonical_matrix(
+    raw,
+    channel_map: dict[str, str | None],
+    edf_path: Path,
+) -> np.ndarray:
+    """Convert volts to µV and zero-pad missing positions in canonical order."""
     try:
-        # MNE returns (n_channels, n_times) in Volts → convert to µV
-        data_by_edf_name: dict[str, np.ndarray] = {}
         edf_data, _ = raw[:]
-        for idx, ch_name in enumerate(raw.ch_names):
-            data_by_edf_name[ch_name] = edf_data[idx] * 1e6  # V → µV
-
-        n_times = edf_data.shape[1]
-        canonical_matrix = np.zeros((N_CHANNELS, n_times), dtype=DTYPE)
-        for c_idx, canon_name in enumerate(CANONICAL_CHANNELS):
-            edf_name = canon_to_edf[canon_name]
-            if edf_name is not None:
-                canonical_matrix[c_idx] = data_by_edf_name[edf_name].astype(DTYPE)
-            # else: zero-padded (already zeros from np.zeros)
-
-    except Exception as exc:
-        logger.warning("SKIP data-assembly error: %s  error=%s", edf_path, exc)
-        return None
-
-    # ── Windowing ─────────────────────────────────────────────────────────────
-    label      = _label_from_path(edf_path)
-    split      = _split_from_path(edf_path)
-    subject_id = _subject_id_from_path(edf_path)
-    rec_id     = _recording_id_from_path(edf_path)
-
-    n_windows = n_times // WINDOW_SAMPLES
-    if n_windows == 0:
-        logger.info(
-            "SKIP_SHORT file=%s duration_samples=%d (need %d)",
-            edf_path.name, n_times, WINDOW_SAMPLES,
+        data_by_name = {
+            channel_name: edf_data[index] * 1e6
+            for index, channel_name in enumerate(raw.ch_names)
+        }
+        canonical = np.zeros(
+            (N_CHANNELS, edf_data.shape[1]),
+            dtype=DTYPE,
         )
-        return None
+        for index, canonical_name in enumerate(CANONICAL_CHANNELS):
+            edf_name = channel_map[canonical_name]
+            if edf_name is not None:
+                canonical[index] = data_by_name[edf_name].astype(DTYPE)
+        return canonical
+    except Exception as exc:
+        raise RecordingProcessingError(
+            "canonical_assembly_error",
+            f"could not assemble {edf_path.name} in canonical order: {exc}",
+        ) from exc
 
-    windows: list[np.ndarray] = []
-    metadatas: list[dict] = []
 
-    for w_idx in range(n_windows):
-        start_sample = w_idx * WINDOW_SAMPLES
-        end_sample   = start_sample + WINDOW_SAMPLES
-        window = canonical_matrix[:, start_sample:end_sample].copy()   # (23, 2000)
+def segment_canonical_recording(
+    canonical_matrix: np.ndarray,
+    edf_path: Path,
+    split: str,
+    label: int,
+    missing_channels: list[str],
+    logger: logging.Logger,
+) -> tuple[list[np.ndarray], list[dict]]:
+    """Create valid non-overlapping windows and their provenance metadata."""
+    number_of_windows = canonical_matrix.shape[1] // WINDOW_SAMPLES
+    if number_of_windows == 0:
+        raise RecordingProcessingError(
+            "recording_too_short",
+            f"recording has {canonical_matrix.shape[1]} samples; need {WINDOW_SAMPLES}",
+        )
 
-        # Sanity check: reject windows with all-zero channels beyond zero-pads
-        # (e.g. if the recording had flat-line artifact on all real channels)
-        n_real = N_CHANNELS - len(missing_channels)
-        real_indices = [
-            i for i, c in enumerate(CANONICAL_CHANNELS) if c not in missing_channels
-        ]
-        if n_real > 0:
-            real_data = window[real_indices]
-            if not np.any(real_data != 0):
-                logger.info(
-                    "SKIP_FLATLINE file=%s window=%d (all real channels flat)",
-                    edf_path.name, w_idx,
-                )
-                continue
+    subject_id = _subject_id_from_path(edf_path)
+    recording_id = _recording_id_from_path(edf_path)
+    real_indices = [
+        index
+        for index, name in enumerate(CANONICAL_CHANNELS)
+        if name not in missing_channels
+    ]
+    windows = []
+    metadata = []
 
-        raw_hash = _sha256_of_array(window)
-        sample_id = f"{subject_id}_{rec_id}_{w_idx:06d}"
+    for window_index in range(number_of_windows):
+        start_sample = window_index * WINDOW_SAMPLES
+        end_sample = start_sample + WINDOW_SAMPLES
+        window = canonical_matrix[:, start_sample:end_sample].copy()
+        if real_indices and not np.any(window[real_indices] != 0):
+            logger.info(
+                "SKIP_FLATLINE file=%s window=%d (all real channels flat)",
+                edf_path.name,
+                window_index,
+            )
+            continue
 
         windows.append(window)
-        metadatas.append({
-            "sample_id":    sample_id,
-            "subject_id":   subject_id,
-            "recording_id": rec_id,
-            "source_path":  str(edf_path),
-            "label":        label,
-            "split":        split,
-            "start_time":   float(start_sample) / SFREQ,
-            "end_time":     float(end_sample)   / SFREQ,
-            "raw_hash":     raw_hash,
+        metadata.append({
+            "sample_id": f"{subject_id}_{recording_id}_{window_index:06d}",
+            "subject_id": subject_id,
+            "recording_id": recording_id,
+            "source_path": str(edf_path),
+            "label": label,
+            "split": split,
+            "start_time": float(start_sample) / SFREQ,
+            "end_time": float(end_sample) / SFREQ,
+            "raw_hash": _sha256_of_array(window),
         })
+    return windows, metadata
 
-    return windows, metadatas, missing_channels
 
-
-# ── HDF5 writer ────────────────────────────────────────────────────────────────
+# H5 creation and resume checks are kept separate from signal processing.
 def _create_hdf5_contents(f: h5py.File, edf_root: Path) -> None:
     """Initialise an open HDF5 file with canonical datasets and attributes."""
     str_dt = h5py.special_dtype(vlen=str)
@@ -446,7 +500,7 @@ def _append_batch(
             ds[n_existing:new_size] = np.array([m[field] for m in metadatas], dtype=np.float32)
 
 
-# ── Statistics tracker ─────────────────────────────────────────────────────────
+# Build statistics are written alongside the dataset for auditability.
 class BuildStats:
     def __init__(self):
         self.total_edfs     = 0
@@ -506,7 +560,7 @@ class BuildStats:
         logger.info("=" * 70)
 
 
-# ── Argument parsing ───────────────────────────────────────────────────────────
+# Paths are required so no researcher accidentally writes to a machine-specific default.
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build canonical TUAB HDF5 dataset for unified EEG foundation model benchmarking.",
@@ -515,19 +569,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--edf_root",
         type=Path,
-        default=Path("/nicoletye/workspace/tuh_data/TUAB/v3.0.1/edf"),
+        required=True,
         help="Root directory of raw TUAB v3.0.1 EDF files (must contain train/ and eval/).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("/nicoletye/workspace/unified_tuab/data/canonical_tuab.h5"),
+        required=True,
         help="Output path for canonical_tuab.h5. Parent directories will be created.",
     )
     parser.add_argument(
         "--log_dir",
         type=Path,
-        default=Path("/nicoletye/workspace/unified_tuab/logs/build"),
+        required=True,
         help="Directory for build log files.",
     )
     parser.add_argument(
@@ -560,7 +614,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--report_dir",
         type=Path,
-        default=Path("/nicoletye/workspace/unified_tuab/reports"),
+        required=True,
         help="Directory for manifest, skipped/error CSVs, and build summary reports.",
     )
     parser.add_argument(
@@ -589,7 +643,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# ── Logging setup ──────────────────────────────────────────────────────────────
+# Each run receives its own log and report identifiers.
 def _safe_run_name(run_name: str | None, timestamp: str) -> str:
     if not run_name:
         return timestamp
@@ -704,9 +758,216 @@ def _write_summary_report(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class FileTask:
+    """Identity and progress information for one EDF file."""
+
+    path: Path
+    index: int
+    total: int
+    started_at: float
+
+
+@dataclass(frozen=True)
+class Failure:
+    """One preprocessing outcome that must be written to the skip reports."""
+
+    reason: str
+    message: str
+    split: str = ""
+    label: object = ""
+    missing_channels: tuple[str, ...] = ()
+    traceback_text: str = ""
+    include_in_error_summary: bool = False
+
+
+@dataclass(frozen=True)
+class ProcessedFile:
+    """Windows and metadata accepted from one EDF recording."""
+
+    split: str
+    label: int
+    windows: list
+    metadata: list
+    missing_channels: list[str]
+
+
+@dataclass
+class BuildContext:
+    """Mutable output state shared while EDF files are processed."""
+
+    h5_file: "h5py.File"
+    stats: "BuildStats"
+    window_buffer: list
+    metadata_buffer: list
+    processed_sources: set
+    manifest_writer: tuple
+    skipped_writer: tuple
+    batch_size: int
+    progress_every: int
+    tb_writer: object
+    logger: logging.Logger
+
+
+def _flush_buffer(context: BuildContext) -> None:
+    """Append buffered windows to H5, record the new size, then clear the buffer."""
+    _append_batch(context.h5_file, context.window_buffer, context.metadata_buffer)
+    context.h5_file.attrs["n_segments"] = context.h5_file["/eeg"].shape[0]
+    context.h5_file.attrs["last_updated_at"] = datetime.now(timezone.utc).isoformat()
+    context.h5_file.flush()
+    context.window_buffer.clear()
+    context.metadata_buffer.clear()
+
+
+def _write_manifest(context: BuildContext, task: FileTask, status: str, **values) -> None:
+    """Write one consistently shaped manifest record."""
+    manifest_fh, manifest_writer = context.manifest_writer
+    missing = values.get("missing_channels", ())
+    row = {
+        "edf_path": str(task.path),
+        "status": status,
+        "split": values.get("split", ""),
+        "label": values.get("label", ""),
+        "n_windows": values.get("n_windows", 0),
+        "missing_channels": ",".join(missing),
+        "message": values.get("message", ""),
+        "elapsed_seconds": f"{time.time() - task.started_at:.3f}",
+    }
+    _write_csv_row(manifest_fh, manifest_writer, row)
+
+
+def _record_failure(context: BuildContext, task: FileTask, failure: Failure) -> None:
+    """Record one skipped EDF in statistics, manifest, and error CSV."""
+    skipped_fh, skipped_writer = context.skipped_writer
+    context.stats.skipped_edfs += 1
+    if failure.include_in_error_summary:
+        context.stats.errors.append(f"{task.path.name}: {failure.message}")
+    _write_csv_row(skipped_fh, skipped_writer, {
+        "edf_path": str(task.path),
+        "reason": failure.reason,
+        "message": failure.message,
+        "traceback": failure.traceback_text,
+    })
+    _write_manifest(
+        context,
+        task,
+        "skipped",
+        split=failure.split,
+        label=failure.label,
+        missing_channels=failure.missing_channels,
+        message=failure.message,
+    )
+
+
+def _record_processed(context: BuildContext, task: FileTask, result: ProcessedFile) -> None:
+    """Update statistics and buffers for one successfully processed EDF."""
+    stats = context.stats
+    stats.processed_edfs += 1
+    if result.missing_channels:
+        stats.record_missing(result.missing_channels)
+    stats.record_windows(result.metadata)
+    context.processed_sources.add(str(task.path))
+    context.window_buffer.extend(result.windows)
+    context.metadata_buffer.extend(result.metadata)
+    _write_manifest(
+        context,
+        task,
+        "processed",
+        split=result.split,
+        label=result.label,
+        n_windows=len(result.windows),
+        missing_channels=result.missing_channels,
+    )
+
+    if len(context.window_buffer) >= context.batch_size:
+        _flush_buffer(context)
+
+    if context.tb_writer is not None:
+        context.tb_writer.add_scalar("build/processed_edfs", stats.processed_edfs, task.index)
+        context.tb_writer.add_scalar("build/skipped_edfs", stats.skipped_edfs, task.index)
+        context.tb_writer.add_scalar("build/total_windows", stats.total_windows, task.index)
+
+    if task.index % context.progress_every == 0 or task.index == task.total:
+        context.logger.info(
+            "PROGRESS files=%d/%d processed=%d resumed=%d skipped=%d windows=%d current=%s",
+            task.index, task.total, stats.processed_edfs, stats.resumed_edfs,
+            stats.skipped_edfs, stats.total_windows, task.path.name,
+        )
+
+
+def _process_one_file(task: FileTask, context: BuildContext) -> None:
+    """Route one EDF to the appropriate resume, failure, or success handler."""
+    if str(task.path) in context.processed_sources:
+        _write_manifest(
+            context,
+            task,
+            "resumed_existing",
+            message="already present in HDF5 source_path metadata",
+        )
+        return
+
+    split = ""
+    label: object = ""
+    try:
+        split = _split_from_path(task.path)
+        label = _label_from_path(task.path)
+        result = process_edf(task.path, context.logger)
+    except RecordingProcessingError as exc:
+        context.logger.warning(
+            "SKIP %s file=%s error=%s",
+            exc.reason,
+            task.path.name,
+            exc,
+        )
+        failure = Failure(
+            reason=exc.reason,
+            message=str(exc),
+            split=split,
+            label=label,
+        )
+        _record_failure(context, task, failure)
+        return
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        context.logger.warning("SKIP unhandled error: %s  error=%s", task.path, message)
+        failure = Failure(
+            reason="unhandled_exception",
+            message=message,
+            traceback_text=traceback.format_exc(),
+            include_in_error_summary=True,
+        )
+        _record_failure(context, task, failure)
+        return
+
+    if not result.windows:
+        failure = Failure(
+            reason="no_windows",
+            message="No valid windows returned after preprocessing/windowing.",
+            split=result.split,
+            label=result.label,
+            missing_channels=tuple(result.missing_channels),
+        )
+        _record_failure(context, task, failure)
+        return
+
+    _record_processed(context, task, result)
+
+
 def main() -> None:
     args = parse_args()
+    require_preprocessing_dependencies()
+    run_preprocessing_pipeline(args)
+
+
+def require_preprocessing_dependencies() -> None:
+    """Fail before scanning data when required preprocessing packages are absent."""
+    missing = [name for name, module in (("h5py", h5py), ("mne", mne), ("tqdm", tqdm)) if module is None]
+    if missing:
+        raise RuntimeError(f"Install preprocessing dependencies before running: {', '.join(missing)}")
+
+
+def run_preprocessing_pipeline(args: argparse.Namespace) -> None:
+    """Validate one build request, process recordings, and verify the H5 output."""
     logger, log_file, run_id = setup_logging(args.log_dir, args.dry_run, args.run_name)
     args.report_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = args.report_dir / f"canonical_tuab_manifest_{run_id}.csv"
@@ -738,7 +999,7 @@ def main() -> None:
     logger.info("  Channels : %d  %s", N_CHANNELS, CANONICAL_CHANNELS)
     logger.info("=" * 70)
 
-    # ── Pre-flight checks ──────────────────────────────────────────────────────
+    # Fail fast on bad paths or an ambiguous overwrite/resume request.
     if not args.edf_root.is_dir():
         logger.error("EDF root does not exist: %s", args.edf_root)
         sys.exit(1)
@@ -762,7 +1023,7 @@ def main() -> None:
     if not args.dry_run:
         args.output.parent.mkdir(parents=True, exist_ok=True)
 
-    # ── Collect EDF paths ──────────────────────────────────────────────────────
+    # Find every EDF under edf_root; a dry run stops here.
     logger.info("Scanning EDF files...")
     edf_paths = sorted(args.edf_root.rglob("*.edf"))
 
@@ -799,7 +1060,7 @@ def main() -> None:
         logger.info("Dry run complete. Scanned %d files.", stats.processed_edfs)
         sys.exit(0)
 
-    # ── Open HDF5 and process ──────────────────────────────────────────────────
+    # Create or resume the output file, then process each EDF in turn.
     t_start = time.time()
     window_buffer:   list[np.ndarray] = []
     metadata_buffer: list[dict]       = []
@@ -835,135 +1096,17 @@ def main() -> None:
                     len(processed_sources), stats.total_windows,
                 )
 
-            # ── Per-file loop ──────────────────────────────────────────────────
+            context = BuildContext(
+                h5_file=h5f, stats=stats, window_buffer=window_buffer, metadata_buffer=metadata_buffer,
+                processed_sources=processed_sources, manifest_writer=(manifest_fh, manifest_writer),
+                skipped_writer=(skipped_fh, skipped_writer), batch_size=args.batch_size,
+                progress_every=args.progress_every, tb_writer=tb_writer, logger=logger,
+            )
             pbar = tqdm(edf_paths, desc="Processing EDF files", unit="file", dynamic_ncols=True)
             for file_idx, edf_path in enumerate(pbar, start=1):
-                file_start = time.time()
-                edf_path_str = str(edf_path)
                 pbar.set_postfix({"file": edf_path.name[:30], "windows": stats.total_windows})
-
-                if edf_path_str in processed_sources:
-                    _write_csv_row(manifest_fh, manifest_writer, {
-                        "edf_path": edf_path_str,
-                        "status": "resumed_existing",
-                        "split": "",
-                        "label": "",
-                        "n_windows": 0,
-                        "missing_channels": "",
-                        "message": "already present in HDF5 source_path metadata",
-                        "elapsed_seconds": "0.0",
-                    })
-                    continue
-
-                try:
-                    split = _split_from_path(edf_path)
-                    label = _label_from_path(edf_path)
-                    result = process_edf(edf_path, logger)
-                except Exception as exc:
-                    tb = traceback.format_exc()
-                    msg = f"{type(exc).__name__}: {exc}"
-                    logger.warning("SKIP unhandled error: %s  error=%s", edf_path, msg)
-                    stats.skipped_edfs += 1
-                    stats.errors.append(f"{edf_path.name}: {msg}")
-                    _write_csv_row(skipped_fh, skipped_writer, {
-                        "edf_path": edf_path_str,
-                        "reason": "unhandled_exception",
-                        "message": msg,
-                        "traceback": tb,
-                    })
-                    _write_csv_row(manifest_fh, manifest_writer, {
-                        "edf_path": edf_path_str,
-                        "status": "skipped",
-                        "split": "",
-                        "label": "",
-                        "n_windows": 0,
-                        "missing_channels": "",
-                        "message": msg,
-                        "elapsed_seconds": f"{time.time() - file_start:.3f}",
-                    })
-                    continue
-
-                if result is None:
-                    stats.skipped_edfs += 1
-                    _write_csv_row(skipped_fh, skipped_writer, {
-                        "edf_path": edf_path_str,
-                        "reason": "process_edf_returned_none",
-                        "message": "See build log for detailed skip reason.",
-                        "traceback": "",
-                    })
-                    _write_csv_row(manifest_fh, manifest_writer, {
-                        "edf_path": edf_path_str,
-                        "status": "skipped",
-                        "split": split,
-                        "label": label,
-                        "n_windows": 0,
-                        "missing_channels": "",
-                        "message": "process_edf_returned_none",
-                        "elapsed_seconds": f"{time.time() - file_start:.3f}",
-                    })
-                    continue
-
-                windows, metadatas, missing = result
-                if not windows:
-                    stats.skipped_edfs += 1
-                    _write_csv_row(skipped_fh, skipped_writer, {
-                        "edf_path": edf_path_str,
-                        "reason": "no_windows",
-                        "message": "No valid windows returned after preprocessing/windowing.",
-                        "traceback": "",
-                    })
-                    _write_csv_row(manifest_fh, manifest_writer, {
-                        "edf_path": edf_path_str,
-                        "status": "skipped",
-                        "split": split,
-                        "label": label,
-                        "n_windows": 0,
-                        "missing_channels": ",".join(missing),
-                        "message": "no_windows",
-                        "elapsed_seconds": f"{time.time() - file_start:.3f}",
-                    })
-                    continue
-
-                stats.processed_edfs += 1
-                if missing:
-                    stats.record_missing(missing)
-                stats.record_windows(metadatas)
-                processed_sources.add(edf_path_str)
-
-                window_buffer.extend(windows)
-                metadata_buffer.extend(metadatas)
-
-                _write_csv_row(manifest_fh, manifest_writer, {
-                    "edf_path": edf_path_str,
-                    "status": "processed",
-                    "split": split,
-                    "label": label,
-                    "n_windows": len(windows),
-                    "missing_channels": ",".join(missing),
-                    "message": "",
-                    "elapsed_seconds": f"{time.time() - file_start:.3f}",
-                })
-
-                # Flush when buffer reaches batch_size
-                if len(window_buffer) >= args.batch_size:
-                    _append_batch(h5f, window_buffer, metadata_buffer)
-                    h5f.attrs["n_segments"] = h5f["/eeg"].shape[0]
-                    h5f.attrs["last_updated_at"] = datetime.now(timezone.utc).isoformat()
-                    h5f.flush()
-                    window_buffer.clear()
-                    metadata_buffer.clear()
-
-                if tb_writer is not None:
-                    tb_writer.add_scalar("build/processed_edfs", stats.processed_edfs, file_idx)
-                    tb_writer.add_scalar("build/skipped_edfs", stats.skipped_edfs, file_idx)
-                    tb_writer.add_scalar("build/total_windows", stats.total_windows, file_idx)
-
-                if file_idx % args.progress_every == 0 or file_idx == len(edf_paths):
-                    logger.info(
-                        "PROGRESS files=%d/%d processed=%d resumed=%d skipped=%d windows=%d current=%s",
-                        file_idx, len(edf_paths), stats.processed_edfs, stats.resumed_edfs,
-                        stats.skipped_edfs, stats.total_windows, edf_path.name,
-                    )
+                task = FileTask(edf_path, file_idx, len(edf_paths), time.time())
+                _process_one_file(task, context)
 
             # Flush remaining
             if window_buffer:
@@ -985,7 +1128,7 @@ def main() -> None:
     logger.info("HDF5 written: %s  (%.1f s)", args.output, t_elapsed)
     logger.info("Total segments stored: %d", stats.total_windows)
 
-    # ── Final summary ──────────────────────────────────────────────────────────
+    # Log and save the run summary, then verify what was written.
     stats.log_summary(logger)
     _write_summary_report(
         summary_path, args, stats, log_file, manifest_path, skipped_path, t_elapsed

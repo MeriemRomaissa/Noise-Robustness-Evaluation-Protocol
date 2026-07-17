@@ -1,0 +1,50 @@
+paths:
+  model_repo: /path/to/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT
+  checkpoint: EEGPT/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
+  h5_file: /path/to/canonical_tuab_full.h5
+  split_index: /path/to/canonical_split_index.csv
+  original_data: /path/to/original/eegpt_pkls
+  output: outputs/eegpt
+
+data:
+  source: unified60
+  train_samples: 8192
+  validation_samples: 2048
+  test_samples: 2048
+
+loader:
+  batch_size: 64
+  num_workers: 2
+  shuffle_train: true
+  drop_last_train: true
+  pin_memory: true
+
+# Change only this value to run the channel ablation.
+study_case:
+  channel_mode: 23channels  # 23channels or 16channels_zeropadded
+
+training:
+  seeds: [0, 42, 123, 256, 512]
+  epochs: 15
+  loss: bce_with_logits
+  optimizer: adamw
+  learning_rate: 0.0005
+  weight_decay: 0.05
+  scheduler: none
+  scheduler_step: none
+  minimum_learning_rate: null
+  gradient_clip_norm: null
+  mixed_precision: false
+
+# Choose full_finetune, linear_probe, or lora.
+fine_tuning:
+  strategy: full_finetune
+  lora:
+    rank: 8
+    alpha: 16
+    dropout: 0.0
+
+evaluation:
+  selection_metric: balanced_accuracy
+  classification_threshold: 0.5
+  report_metrics: [balanced_accuracy, auroc, auprc]

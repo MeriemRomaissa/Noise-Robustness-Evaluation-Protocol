@@ -1,0 +1,53 @@
+paths:
+  model_repo: /path/to/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot
+  checkpoint: REQUIRED_AUTHOR_PREST_CHECKPOINT_PATH
+  h5_file: /path/to/canonical_tuab_full.h5
+  split_index: /path/to/canonical_split_index.csv
+  original_data: /path/to/original/biot_pkls
+  output: outputs/biot
+
+data:
+  source: unified60
+  train_samples: 8192
+  validation_samples: 2048
+  test_samples: 2048
+  normalization_epsilon: 1.0e-8
+
+loader:
+  batch_size: 64
+  num_workers: 8
+  shuffle_train: true
+  drop_last_train: false
+  pin_memory: true
+
+model:
+  n_fft: 200
+  hop_length: 100
+  depth: 4
+  heads: 8
+
+training:
+  seeds: [0, 42, 123, 256, 512]
+  epochs: 15
+  loss: bce_with_logits
+  optimizer: adam
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler: none
+  scheduler_step: none
+  minimum_learning_rate: null
+  gradient_clip_norm: null
+  mixed_precision: false
+
+# Choose full_finetune, linear_probe, or lora.
+fine_tuning:
+  strategy: full_finetune
+  lora:
+    rank: 8
+    alpha: 16
+    dropout: 0.0
+
+evaluation:
+  selection_metric: auroc
+  classification_threshold: 0.5
+  report_metrics: [balanced_accuracy, auroc, auprc]
