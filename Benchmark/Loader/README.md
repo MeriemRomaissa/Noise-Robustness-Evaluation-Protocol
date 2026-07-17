@@ -25,6 +25,23 @@ The dependency only goes one way: every `loader_<model>.py` uses
 batching reusable while each model's own scientific choices stay local to its
 own file.
 
+## Execution flow
+main() in train_labram.py
+     ↓ calls
+build_unified60_loader(config, "train") from loader_labram.py
+     ↓ calls
+build_h5_loader(config, "train", transform_window) from loader_common.py
+     ↓ creates
+Unified60Dataset(config, "train", transform_window)
+     ↓ called by
+DataLoader(dataset, batch_size=64, shuffle=True, ...)
+     ↓ iterates (during training loop)
+Unified60Dataset.__getitem__(idx)
+     ↓ calls
+transform_window(window, channel_names, config) from loader_labram.py
+     ↓ returns
+[B,23,10,200] tensor ready for model
+
 ## Who owns what
 
 `loader_common.py` handles everything that has to behave identically across
