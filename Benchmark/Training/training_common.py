@@ -4,12 +4,14 @@ Model-specific files provide model construction and checkpoint-name rules. This
 module owns the decisions that must remain identical across the benchmark:
 configuration validation, deterministic seeds, loader construction, mandatory
 pretrained initialization, fine-tuning, validation-based model selection,
-single final test evaluation, and cross-seed reporting.
+LaBraM-compatible output logging, final test evaluation, and cross-seed
+reporting.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
 import json
 import math
@@ -18,6 +20,7 @@ import sys
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import numpy as np
@@ -37,7 +40,7 @@ class ModelSpec:
 
 
 @dataclass(frozen=True)
-class EpochContext:
+class SplitContext:
     """Hold the model state shared by every batch in one data split."""
 
     model: nn.Module
@@ -64,7 +67,7 @@ class SeedExperiment:
     run_dir: Path
     model: nn.Module
     loaders: dict[str, Any]
-    contexts: dict[str, EpochContext]
+    contexts: dict[str, SplitContext]
     optimization: Optimization
     checkpoint_report: dict
     fine_tuning_report: dict
@@ -80,10 +83,28 @@ class ModelSelection:
     history: list[dict]
 
 
+COMMON_BACKBONE_CHECKPOINT_PREFIXES = (
+    "module.backbone.",
+    "model.backbone.",
+    "backbone.",
+    "module.",
+)
+BIOT_ENCODER_CHECKPOINT_PREFIXES = (
+    "module.biot.",
+    "model.biot.",
+    "biot.",
+    "module.",
+    "model.",
+)
+
+
 def run_experiments(spec: ModelSpec, default_config: str) -> None:
     """Run every configured seed and summarize final test performance."""
     arguments = parse_arguments(default_config)
-    config = load_config(arguments.config)
+    config = load_config(arguments.config, arguments)
+    if arguments.dry_run:
+        print(json.dumps(config, indent=2, default=str))
+        return
     seeds = [int(seed) for seed in config["training"]["seeds"]]
 
     seed_results = [run_seed(spec, config, seed) for seed in seeds]
@@ -119,7 +140,7 @@ def prepare_seed_experiment(spec: ModelSpec, config: dict, seed: int) -> SeedExp
     model, checkpoint_report = build_pretrained_model(spec, config)
     model.to(device)
 
-    fine_tuning_report = configure_fine_tuning(model, config)
+    fine_tuning_report = configure_fine_tuning(model, config, spec.name)
     optimization = build_optimization(model, config, len(loaders["train"]))
     contexts = build_epoch_contexts(model, device, config, transforms)
 
@@ -138,13 +159,15 @@ def prepare_seed_experiment(spec: ModelSpec, config: dict, seed: int) -> SeedExp
 
 
 def train_and_select_best_model(experiment: SeedExperiment) -> ModelSelection:
-    """Train all epochs and select a checkpoint using validation data only."""
+    """Train, log train/val/test each epoch, and select using validation only."""
     config = experiment.config
     selection_metric = config["evaluation"]["selection_metric"]
+    output_format = load_evaluation_output_format()
     best_value = -math.inf
     best_epoch = 0
     history = []
-    checkpoint_path = experiment.run_dir / "best_model.pt"
+    checkpoint_path = experiment.run_dir / "checkpoint-best.pth"
+    n_parameters = output_format.trainable_parameter_count(experiment.model)
 
     for epoch in range(1, int(config["training"]["epochs"]) + 1):
         train_metrics = train_one_epoch(
@@ -156,18 +179,49 @@ def train_and_select_best_model(experiment: SeedExperiment) -> ModelSelection:
             experiment.contexts["val"],
             experiment.loaders["val"],
         )
+        test_metrics = evaluate_one_split(
+            experiment.contexts["test"],
+            experiment.loaders["test"],
+        )
         step_epoch_scheduler(experiment.optimization, config)
 
-        history.append(format_epoch_record(epoch, train_metrics, validation_metrics))
+        epoch_record = format_epoch_record(
+            epoch,
+            train_metrics,
+            validation_metrics,
+            test_metrics,
+        )
+        history.append(epoch_record)
+        log_record = output_format.epoch_log_record(
+            epoch,
+            train_metrics,
+            validation_metrics,
+            test_metrics,
+            n_parameters,
+        )
+        output_format.record_log_txt(experiment.run_dir, log_record)
+        output_format.save_epoch_checkpoints(
+            experiment.run_dir,
+            experiment.model,
+            experiment.optimization.optimizer,
+            experiment.optimization.scheduler,
+            epoch,
+            log_record,
+            config,
+        )
+
         current_value = validation_metrics[selection_metric]
         if current_value > best_value:
             best_value = current_value
             best_epoch = epoch
-            save_selected_checkpoint(
-                checkpoint_path,
+            checkpoint_path = output_format.save_best_checkpoint(
+                experiment.run_dir,
                 experiment.model,
+                experiment.optimization.optimizer,
+                experiment.optimization.scheduler,
                 epoch,
-                validation_metrics,
+                log_record,
+                config,
             )
 
     if best_epoch == 0:
@@ -235,14 +289,49 @@ def summarize_seed_results(seed_results: list[dict], metrics: list[str]) -> dict
 
 
 def parse_arguments(default_config: str) -> argparse.Namespace:
-    """Accept an alternate YAML path while keeping all choices inside YAML."""
+    """Expose benchmark controls plus machine-specific path overrides."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=default_config)
+    parser.add_argument("--model-repo")
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--h5-file")
+    parser.add_argument("--split-index")
+    parser.add_argument("--original-data")
+    parser.add_argument("--output")
+    parser.add_argument("--data-source", choices=["tuab_unified60", "original"])
+    parser.add_argument("--train-samples", type=int)
+    parser.add_argument("--validation-samples", type=int)
+    parser.add_argument("--test-samples", type=int)
+    parser.add_argument(
+        "--tuab-mode",
+        choices=["subset_tuab", "full_tuab"],
+        default=None,
+        help="TUAB dataset study case. Overrides config study_case.tuab_mode.",
+    )
+    parser.add_argument("--seeds", nargs="+", type=int)
+    parser.add_argument("--epochs", type=int)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument(
+        "--fine-tuning-strategy",
+        choices=["full_finetune", "freeze_backbone", "lora"],
+        help="Override config fine_tuning.strategy.",
+    )
+    parser.add_argument(
+        "--evaluation-metrics",
+        nargs="+",
+        choices=["balanced_accuracy", "roc_auc", "pr_auc", "accuracy"],
+    )
+    parser.add_argument("--classification-threshold", type=float)
+    parser.add_argument(
+        "--selection-metric",
+        choices=["balanced_accuracy", "roc_auc", "pr_auc", "accuracy"],
+    )
+    parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
-def load_config(path: str | Path) -> dict:
-    """Read YAML and reject invalid settings before expensive model setup."""
+def load_config(path: str | Path, arguments: argparse.Namespace | None = None) -> dict:
+    """Read YAML, merge locked recipe defaults, and validate before setup."""
     try:
         import yaml
     except ImportError as exc:
@@ -257,8 +346,141 @@ def load_config(path: str | Path) -> dict:
         raise ValueError(f"Expected a YAML mapping in {config_path}")
 
     config["_config_path"] = str(config_path)
+    validate_reader_facing_config(config)
+    config = merge_locked_recipe(config)
+    normalize_config_metric_names(config)
+    if arguments is not None:
+        apply_argument_overrides(config, arguments)
+    apply_tuab_mode_case(config)
     validate_config(config)
     return config
+
+
+def validate_reader_facing_config(config: dict) -> None:
+    """Reject model-recipe knobs outside the locked recipe section."""
+    allowed_sections = {
+        "paths",
+        "data",
+        "loader",
+        "training",
+        "fine_tuning",
+        "evaluation",
+        "study_case",
+        "fixed_recipe",
+        "_config_path",
+    }
+    extra_sections = set(config) - allowed_sections
+    if extra_sections:
+        raise ValueError(
+            "Only editable benchmark settings may appear at top level. Move locked "
+            f"recipe sections under fixed_recipe: {sorted(extra_sections)}"
+        )
+
+    allowed_keys = {
+        "paths": {
+            "h5_file", "split_index", "original_data", "output",
+        },
+        "data": {
+            "source", "train_samples", "validation_samples", "test_samples",
+        },
+        "loader": {"batch_size"},
+        "training": {"seeds", "epochs"},
+        "fine_tuning": {"strategy"},
+        "evaluation": {
+            "selection_metric", "classification_threshold", "report_metrics",
+        },
+        "study_case": {"tuab_mode", "channel_mode"},
+    }
+    for section, keys in allowed_keys.items():
+        values = config.get(section, {})
+        if not isinstance(values, dict):
+            continue
+        extra_keys = set(values) - keys
+        if extra_keys:
+            raise ValueError(
+                f"{section} contains locked recipe fields {sorted(extra_keys)}. "
+                "Keep model-specific settings under fixed_recipe."
+            )
+
+
+def merge_locked_recipe(config: dict) -> dict:
+    """Copy fixed model-recipe values into the runtime config."""
+    merged = copy.deepcopy(config)
+    recipe = merged.get("fixed_recipe", {})
+    if recipe is None:
+        recipe = {}
+    if not isinstance(recipe, dict):
+        raise ValueError("fixed_recipe must be a YAML mapping")
+
+    for section in (
+        "paths",
+        "data",
+        "loader",
+        "training",
+        "fine_tuning",
+        "model",
+        "study_case",
+    ):
+        recipe_values = recipe.get(section)
+        if recipe_values is None:
+            continue
+        if not isinstance(recipe_values, dict):
+            raise ValueError(f"fixed_recipe.{section} must be a YAML mapping")
+        section_values = merged.setdefault(section, {})
+        if not isinstance(section_values, dict):
+            raise ValueError(f"{section} must be a YAML mapping")
+        for key, value in recipe_values.items():
+            section_values.setdefault(key, value)
+    return merged
+
+
+def apply_argument_overrides(config: dict, arguments: argparse.Namespace) -> None:
+    """Apply CLI overrides for approved controls and local path locations."""
+    mappings = {
+        "model_repo": ("paths", "model_repo"),
+        "checkpoint": ("paths", "checkpoint"),
+        "h5_file": ("paths", "h5_file"),
+        "split_index": ("paths", "split_index"),
+        "original_data": ("paths", "original_data"),
+        "output": ("paths", "output"),
+        "data_source": ("data", "source"),
+        "train_samples": ("data", "train_samples"),
+        "validation_samples": ("data", "validation_samples"),
+        "test_samples": ("data", "test_samples"),
+        "tuab_mode": ("study_case", "tuab_mode"),
+        "seeds": ("training", "seeds"),
+        "epochs": ("training", "epochs"),
+        "batch_size": ("loader", "batch_size"),
+        "fine_tuning_strategy": ("fine_tuning", "strategy"),
+        "evaluation_metrics": ("evaluation", "report_metrics"),
+        "classification_threshold": ("evaluation", "classification_threshold"),
+        "selection_metric": ("evaluation", "selection_metric"),
+    }
+    for argument_name, (section, key) in mappings.items():
+        value = getattr(arguments, argument_name)
+        if value is not None:
+            config.setdefault(section, {})[key] = normalize_metric_names(value)
+
+
+def normalize_metric_names(value):
+    """Accept reader-facing ROC/PR names and use stable internal names."""
+    aliases = {"roc_auc": "auroc", "pr_auc": "auprc"}
+    if isinstance(value, list):
+        return [aliases.get(item, item) for item in value]
+    return aliases.get(value, value)
+
+
+def normalize_config_metric_names(config: dict) -> None:
+    """Normalize metric spelling in the loaded YAML in-place."""
+    evaluation = config.get("evaluation", {})
+    if "selection_metric" in evaluation:
+        evaluation["selection_metric"] = normalize_metric_names(
+            evaluation["selection_metric"]
+        )
+    if "report_metrics" in evaluation:
+        evaluation["report_metrics"] = normalize_metric_names(
+            evaluation["report_metrics"]
+        )
 
 
 def validate_config(config: dict) -> None:
@@ -268,9 +490,8 @@ def validate_config(config: dict) -> None:
             "model_repo", "checkpoint", "h5_file", "split_index",
             "original_data", "output",
         ],
-        "data": [
-            "source", "train_samples", "validation_samples", "test_samples",
-        ],
+        "data": ["source"],
+        "study_case": ["tuab_mode"],
         "loader": [
             "batch_size", "num_workers", "shuffle_train",
             "drop_last_train", "pin_memory",
@@ -291,7 +512,6 @@ def validate_config(config: dict) -> None:
 
     validate_config_choices(config)
     validate_numeric_config(config)
-    validate_lora_config(config)
 
 
 def find_missing_config_values(config: dict, required: dict[str, list[str]]) -> list[str]:
@@ -308,10 +528,20 @@ def find_missing_config_values(config: dict, required: dict[str, list[str]]) -> 
     return sorted(set(missing))
 
 
+def apply_tuab_mode_case(config: dict) -> None:
+    """Let the TUAB study case own subset-vs-full sample-limit decisions."""
+    study_directory = Path(__file__).resolve().parents[1] / "StudyCase" / "Dataset"
+    if str(study_directory) not in sys.path:
+        sys.path.insert(0, str(study_directory))
+
+    tuab_case = importlib.import_module("TUAB_subset_vs_fullset")
+    tuab_case.apply_tuab_mode(config)
+
+
 def validate_config_choices(config: dict) -> None:
     """Reject misspelled experiment choices and show the accepted values."""
     choices = {
-        "data.source": (config["data"]["source"], {"unified60", "original"}),
+        "data.source": (config["data"]["source"], {"tuab_unified60", "original"}),
         "training.loss": (
             config["training"]["loss"],
             {"cross_entropy", "bce_with_logits"},
@@ -326,11 +556,11 @@ def validate_config_choices(config: dict) -> None:
         ),
         "fine_tuning.strategy": (
             config["fine_tuning"]["strategy"],
-            {"full_finetune", "linear_probe", "lora"},
+            {"full_finetune", "freeze_backbone", "lora"},
         ),
         "evaluation.selection_metric": (
             config["evaluation"]["selection_metric"],
-            {"balanced_accuracy", "auroc", "auprc"},
+            {"balanced_accuracy", "auroc", "auprc", "accuracy"},
         ),
     }
 
@@ -338,7 +568,7 @@ def validate_config_choices(config: dict) -> None:
         if value not in allowed:
             raise ValueError(f"{name} must be one of {sorted(allowed)}, got {value!r}")
 
-    supported_metrics = {"balanced_accuracy", "auroc", "auprc"}
+    supported_metrics = {"balanced_accuracy", "auroc", "auprc", "accuracy"}
     unknown_metrics = set(config["evaluation"]["report_metrics"]) - supported_metrics
     if unknown_metrics:
         raise ValueError(f"Unknown evaluation.report_metrics: {sorted(unknown_metrics)}")
@@ -367,24 +597,10 @@ def validate_numeric_config(config: dict) -> None:
     if not 0.0 <= threshold <= 1.0:
         raise ValueError("evaluation.classification_threshold must be between 0 and 1")
 
-
-def validate_lora_config(config: dict) -> None:
-    """Require LoRA parameters only when the researcher selects LoRA."""
-    if config["fine_tuning"]["strategy"] != "lora":
-        return
-
-    settings = config["fine_tuning"].get("lora")
-    required = ("rank", "alpha", "dropout")
-    if not isinstance(settings, dict):
-        raise ValueError("fine_tuning.lora settings are required when LoRA is selected")
-
-    missing = [key for key in required if settings.get(key) is None]
-    if missing:
-        raise ValueError("Missing LoRA settings: " + ", ".join(missing))
-    if int(settings["rank"]) <= 0:
-        raise ValueError("fine_tuning.lora.rank must be positive")
-    if not 0.0 <= float(settings["dropout"]) <= 1.0:
-        raise ValueError("fine_tuning.lora.dropout must be between 0 and 1")
+    for key in ("train_samples", "validation_samples", "test_samples"):
+        value = config["data"].get(key)
+        if value is not None and int(value) < 1:
+            raise ValueError(f"data.{key} must be positive or null for full_tuab")
 
 
 def select_device() -> torch.device:
@@ -516,6 +732,49 @@ def load_matching_weights(
     }
 
 
+def strip_first_matching_prefix(source_key: str, prefixes: tuple[str, ...]) -> str:
+    """Remove the first known author-wrapper prefix from a checkpoint key."""
+    for prefix in prefixes:
+        if source_key.startswith(prefix):
+            return source_key.removeprefix(prefix)
+    return source_key
+
+
+def make_checkpoint_key_mapper(prefixes: tuple[str, ...]) -> Callable[[str], str]:
+    """Create a checkpoint key mapper from a shared prefix list."""
+    return lambda source_key: strip_first_matching_prefix(source_key, prefixes)
+
+
+def load_prefixed_checkpoint(
+    target: nn.Module,
+    checkpoint_path: Path,
+    prefixes: tuple[str, ...],
+) -> dict:
+    """Load an EEG-FM checkpoint through an internal namespace bridge.
+
+    The checkpoint path comes from the model's fixed EEG-FM dependency. Prefix
+    stripping only maps author checkpoint names onto Benchmark wrapper names; it
+    is not a user-facing recipe setting.
+    """
+    return load_matching_weights(
+        target=target,
+        checkpoint_path=checkpoint_path,
+        key_mapper=make_checkpoint_key_mapper(prefixes),
+    )
+
+
+def namespace_from_config(settings: dict, field_map: dict[str, Any]) -> SimpleNamespace:
+    """Build the small argparse-like namespace expected by author model code."""
+    values = {}
+    for author_name, spec in field_map.items():
+        if isinstance(spec, tuple):
+            config_name, converter = spec
+        else:
+            config_name, converter = spec, lambda item: item
+        values[author_name] = converter(settings[config_name])
+    return SimpleNamespace(**values)
+
+
 def loader_config(config: dict, split: str) -> dict:
     """Translate reader-facing YAML into the stable shared-loader interface."""
     data = config["data"]
@@ -556,7 +815,7 @@ def build_loaders(config: dict, module_name: str) -> dict[str, Any]:
         sys.path.insert(0, str(loader_directory))
 
     loader_module = importlib.import_module(module_name)
-    if config["data"]["source"] == "unified60":
+    if config["data"]["source"] == "tuab_unified60":
         build_loader = loader_module.build_unified60_loader
     else:
         build_loader = loader_module.build_original_loader
@@ -588,12 +847,12 @@ def build_study_case_transform(
     settings = config.get("study_case")
     if settings is None:
         return leave_eeg_unchanged
-    if spec.study_case_module is None:
-        raise ValueError(f"{spec.name} does not define a channel study case")
 
     mode = settings.get("channel_mode")
     if mode is None:
-        raise ValueError("study_case.channel_mode is required when study_case is present")
+        return leave_eeg_unchanged
+    if spec.study_case_module is None:
+        raise ValueError(f"{spec.name} does not define a channel study case")
 
     study_directory = Path(__file__).resolve().parents[1] / "StudyCase" / "Channel"
     if str(study_directory) not in sys.path:
@@ -618,234 +877,22 @@ def build_epoch_contexts(
     device: torch.device,
     config: dict,
     transforms: dict[str, Callable[[Any], Any]],
-) -> dict[str, EpochContext]:
+) -> dict[str, SplitContext]:
     """Bind each split to its model, device, configuration, and transform."""
     return {
-        split: EpochContext(model, device, config, transform)
+        split: SplitContext(model, device, config, transform)
         for split, transform in transforms.items()
     }
 
 
-class LoRALinear(nn.Module):
-    """Add a low-rank trainable update while preserving a frozen linear layer."""
+def configure_fine_tuning(model: nn.Module, config: dict, model_name: str) -> dict:
+    """Apply the config-selected strategy through the shared StudyCase module."""
+    study_directory = Path(__file__).resolve().parents[1] / "StudyCase" / "Finetuning"
+    if str(study_directory) not in sys.path:
+        sys.path.insert(0, str(study_directory))
 
-    def __init__(self, base: nn.Linear, rank: int, alpha: float, dropout: float):
-        super().__init__()
-        self.base = base
-        self.scale = alpha / rank
-        self.dropout = nn.Dropout(dropout)
-
-        device = base.weight.device
-        dtype = base.weight.dtype
-        self.lora_a = nn.Linear(
-            base.in_features,
-            rank,
-            bias=False,
-            device=device,
-            dtype=dtype,
-        )
-        self.lora_b = nn.Linear(
-            rank,
-            base.out_features,
-            bias=False,
-            device=device,
-            dtype=dtype,
-        )
-        nn.init.kaiming_uniform_(self.lora_a.weight, a=math.sqrt(5))
-        nn.init.zeros_(self.lora_b.weight)
-
-    def forward(self, inputs):
-        low_rank_update = self.lora_b(self.lora_a(self.dropout(inputs)))
-        return self.base(inputs) + low_rank_update * self.scale
-
-
-def configure_fine_tuning(model: nn.Module, config: dict) -> dict:
-    """Direct the model to the selected, explicitly named adaptation strategy."""
-    strategy = config["fine_tuning"]["strategy"]
-
-    if strategy == "full_finetune":
-        lora_targets = configure_full_fine_tuning(model)
-    elif strategy == "linear_probe":
-        lora_targets = configure_linear_probe(model)
-    elif strategy == "lora":
-        lora_targets = configure_lora(model, config["fine_tuning"]["lora"])
-    else:
-        raise ValueError(f"Unsupported fine-tuning strategy: {strategy}")
-
-    audit = audit_fine_tuning_strategy(model, strategy, lora_targets)
-    return {
-        "strategy": strategy,
-        **audit,
-        "lora_targets": lora_targets,
-    }
-
-
-def configure_full_fine_tuning(model: nn.Module) -> list[str]:
-    """Allow every pretrained model parameter to update."""
-    set_all_parameters_trainable(model, True)
-    return []
-
-
-def configure_linear_probe(model: nn.Module) -> list[str]:
-    """Freeze the backbone and train only recognized task-head parameters."""
-    set_all_parameters_trainable(model, False)
-    for name, parameter in model.named_parameters():
-        parameter.requires_grad = is_head_parameter(name)
-    return []
-
-
-def configure_lora(model: nn.Module, settings: dict) -> list[str]:
-    """Freeze the backbone and add trainable low-rank adapters to safe layers."""
-    set_all_parameters_trainable(model, False)
-    candidates = find_lora_target_modules(model)
-    if not candidates:
-        raise RuntimeError("LoRA selected, but no safe backbone nn.Linear targets were found")
-
-    targets = []
-    for name, module in candidates:
-        replacement = LoRALinear(
-            module,
-            rank=int(settings["rank"]),
-            alpha=float(settings["alpha"]),
-            dropout=float(settings["dropout"]),
-        )
-        replace_module(model, name, replacement)
-        targets.append(name)
-
-    for name, parameter in model.named_parameters():
-        parameter.requires_grad = "lora_" in name or is_head_parameter(name)
-    return targets
-
-
-def set_all_parameters_trainable(model: nn.Module, trainable: bool) -> None:
-    """Apply one trainability state before a strategy selects exceptions."""
-    for parameter in model.parameters():
-        parameter.requires_grad = trainable
-
-
-def is_head_parameter(name: str) -> bool:
-    """Recognize task heads across the six author model naming conventions."""
-    lowered = name.lower()
-    head_names = ("classifier", "head", "final_layer", "fc_out", "linear_probe")
-    return any(token in lowered for token in head_names)
-
-
-def find_lora_target_modules(model: nn.Module) -> list[tuple[str, nn.Linear]]:
-    """Find safe backbone linear layers without asking readers for module names."""
-    targets = []
-    for name, module in model.named_modules():
-        if not name or not isinstance(module, nn.Linear):
-            continue
-        if is_head_parameter(name) or ".base" in name:
-            continue
-        if name.endswith("out_proj") or name.endswith("qkv"):
-            continue
-        targets.append((name, module))
-    return targets
-
-
-def replace_module(root: nn.Module, name: str, replacement: nn.Module) -> None:
-    """Replace a dotted child module without editing the author repository."""
-    parent = root
-    parts = name.split(".")
-    for part in parts[:-1]:
-        parent = getattr(parent, part)
-    setattr(parent, parts[-1], replacement)
-
-
-def count_trainable_parameters(model: nn.Module) -> int:
-    """Count parameters that the selected strategy will update."""
-    return sum(
-        parameter.numel()
-        for parameter in model.parameters()
-        if parameter.requires_grad
-    )
-
-
-def audit_fine_tuning_strategy(
-    model: nn.Module,
-    strategy: str,
-    lora_targets: list[str],
-) -> dict:
-    """Prove that the selected strategy made only its intended tensors trainable."""
-    trainable_names = [
-        name for name, parameter in model.named_parameters() if parameter.requires_grad
-    ]
-    frozen_names = [
-        name for name, parameter in model.named_parameters() if not parameter.requires_grad
-    ]
-    if not trainable_names:
-        raise RuntimeError(f"{strategy} selected zero trainable parameter tensors")
-
-    if strategy == "full_finetune":
-        if frozen_names:
-            raise RuntimeError(
-                "full_finetune left frozen parameter tensors: "
-                + ", ".join(frozen_names[:10])
-            )
-    elif strategy == "linear_probe":
-        unexpected = [
-            name for name in trainable_names if not is_head_parameter(name)
-        ]
-        if unexpected:
-            raise RuntimeError(
-                "linear_probe made non-head tensors trainable: "
-                + ", ".join(unexpected[:10])
-            )
-        if not frozen_names:
-            raise RuntimeError("linear_probe did not freeze any backbone parameters")
-    elif strategy == "lora":
-        validate_lora_audit(model, trainable_names, lora_targets)
-
-    return {
-        "trainable_parameters": count_trainable_parameters(model),
-        "frozen_parameters": sum(
-            parameter.numel()
-            for parameter in model.parameters()
-            if not parameter.requires_grad
-        ),
-        "trainable_parameter_tensors": trainable_names,
-    }
-
-
-def validate_lora_audit(
-    model: nn.Module,
-    trainable_names: list[str],
-    lora_targets: list[str],
-) -> None:
-    """Require LoRA adapters to train while their original linear layers stay frozen."""
-    if not lora_targets:
-        raise RuntimeError("lora did not replace any backbone linear layers")
-
-    unexpected = [
-        name
-        for name in trainable_names
-        if "lora_" not in name and not is_head_parameter(name)
-    ]
-    if unexpected:
-        raise RuntimeError(
-            "lora made unexpected backbone tensors trainable: "
-            + ", ".join(unexpected[:10])
-        )
-
-    for target_name in lora_targets:
-        adapter = find_module(model, target_name)
-        if not isinstance(adapter, LoRALinear):
-            raise RuntimeError(f"LoRA target was not replaced: {target_name}")
-        if any(parameter.requires_grad for parameter in adapter.base.parameters()):
-            raise RuntimeError(f"LoRA base layer is not frozen: {target_name}")
-        if not all(parameter.requires_grad for parameter in adapter.lora_a.parameters()):
-            raise RuntimeError(f"LoRA A projection is frozen: {target_name}")
-        if not all(parameter.requires_grad for parameter in adapter.lora_b.parameters()):
-            raise RuntimeError(f"LoRA B projection is frozen: {target_name}")
-
-
-def find_module(model: nn.Module, dotted_name: str) -> nn.Module:
-    """Resolve one recorded module name for post-configuration auditing."""
-    module = model
-    for part in dotted_name.split("."):
-        module = getattr(module, part)
-    return module
+    strategies = importlib.import_module("finetuning_strategies")
+    return strategies.apply_finetuning_strategy(model, config, model_name)
 
 
 def build_optimization(model: nn.Module, config: dict, steps_per_epoch: int) -> Optimization:
@@ -906,7 +953,7 @@ def step_epoch_scheduler(optimization: Optimization, config: dict) -> None:
 
 
 def train_one_epoch(
-    context: EpochContext,
+    context: SplitContext,
     loader,
     optimization: Optimization,
 ) -> dict[str, float]:
@@ -914,13 +961,13 @@ def train_one_epoch(
     return _run_split(context, loader, optimization=optimization)
 
 
-def evaluate_one_split(context: EpochContext, loader) -> dict[str, float]:
+def evaluate_one_split(context: SplitContext, loader) -> dict[str, float]:
     """Measure one complete validation or test split without updating the model."""
     return _run_split(context, loader, optimization=None)
 
 
 def _run_split(
-    context: EpochContext,
+    context: SplitContext,
     loader,
     optimization: Optimization | None,
 ) -> dict[str, float]:
@@ -970,7 +1017,7 @@ def _run_split(
     return metrics
 
 
-def move_batch_to_device(batch, context: EpochContext):
+def move_batch_to_device(batch, context: SplitContext):
     """Apply the study case and move one EEG-label batch to the selected device."""
     inputs = context.transform(batch[0]).to(context.device, non_blocking=True)
     targets = batch[1].to(context.device, non_blocking=True)
@@ -1051,9 +1098,10 @@ def binary_metrics(
     scores: list[float],
     threshold: float,
 ) -> dict[str, float]:
-    """Calculate balanced accuracy, AUROC, and AUPRC consistently."""
+    """Calculate thresholded and ranking metrics consistently."""
     try:
         from sklearn.metrics import (
+            accuracy_score,
             average_precision_score,
             balanced_accuracy_score,
             roc_auc_score,
@@ -1068,6 +1116,7 @@ def binary_metrics(
         raise ValueError("AUROC and balanced accuracy require both classes in this split")
 
     return {
+        "accuracy": float(accuracy_score(truth, predictions)),
         "balanced_accuracy": float(balanced_accuracy_score(truth, predictions)),
         "auroc": float(roc_auc_score(truth, probabilities)),
         "auprc": float(average_precision_score(truth, probabilities)),
@@ -1078,31 +1127,24 @@ def format_epoch_record(
     epoch: int,
     train_metrics: dict,
     validation_metrics: dict,
+    test_metrics: dict,
 ) -> dict:
-    """Name train and validation values explicitly in the saved history."""
+    """Name train, validation, and test values explicitly in saved history."""
     record = {"epoch": epoch}
     record.update({f"train_{name}": value for name, value in train_metrics.items()})
     record.update(
         {f"validation_{name}": value for name, value in validation_metrics.items()}
     )
+    record.update({f"test_{name}": value for name, value in test_metrics.items()})
     return record
 
 
-def save_selected_checkpoint(
-    path: Path,
-    model: nn.Module,
-    epoch: int,
-    validation_metrics: dict,
-) -> None:
-    """Save model state only when validation performance establishes a new best."""
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "epoch": epoch,
-            "validation": validation_metrics,
-        },
-        path,
-    )
+def load_evaluation_output_format():
+    """Import the output-format helpers without requiring package installation."""
+    evaluation_directory = Path(__file__).resolve().parents[1] / "Evaluation"
+    if str(evaluation_directory) not in sys.path:
+        sys.path.insert(0, str(evaluation_directory))
+    return importlib.import_module("output_format")
 
 
 def save_json(path: Path, value: Any) -> None:

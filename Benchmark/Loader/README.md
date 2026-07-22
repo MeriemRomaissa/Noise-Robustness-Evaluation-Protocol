@@ -117,22 +117,18 @@ windows, the same split indices, the same batching, and end at the same
 model-ready shape. The only thing that changes is which channel positions
 carry real signal.
 
-## Batching knobs
+## Batching controls
 
-Set in the YAML, not in code:
+Batch size is a reproduction control:
 
 ```yaml
 loader:
   batch_size: 64
-  num_workers: 8
-  shuffle_train: true
-  drop_last_train: false
-  pin_memory: true
 ```
 
-Train can shuffle and drop its last partial batch; validation and test never
-do either. `num_workers`/`pin_memory` only affect load speed, not what values
-end up in a batch.
+Worker count, pinned memory, train shuffle, and `drop_last` are locked recipe
+or execution defaults. They are still used by the shared loader, but they are
+not normal benchmark comparison knobs.
 
 ## One sanity check worth knowing about
 

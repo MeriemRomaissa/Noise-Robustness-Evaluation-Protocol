@@ -41,7 +41,7 @@ def transform_pkl_window(window, channel_names=None, config=None):
 
 
 def normalization_epsilon(config) -> float:
-    """Read the numerical floor used when a channel has near-zero amplitude."""
+    """Read the small denominator offset used by original BIOT TUAB normalization."""
     settings = config or {}
     return float(
         settings.get("normalization_epsilon", DEFAULT_NORMALIZATION_EPSILON)
@@ -49,7 +49,7 @@ def normalization_epsilon(config) -> float:
 
 
 def q95_abs_normalize(window, epsilon=DEFAULT_NORMALIZATION_EPSILON):
-    """Scale each channel by its 95th-percentile absolute amplitude."""
+    """Match original BIOT TUAB robust amplitude normalization."""
     if is_torch_tensor(window):
         scale = torch.quantile(
             window.detach().abs().float(),
@@ -57,15 +57,12 @@ def q95_abs_normalize(window, epsilon=DEFAULT_NORMALIZATION_EPSILON):
             dim=-1,
             keepdim=True,
         )
-        safe_scale = torch.clamp(scale.to(window), min=epsilon)
-        return window / safe_scale
+        denominator = scale.to(window) + epsilon
+        return window / denominator
 
     scale = np.quantile(np.abs(window), 0.95, axis=-1, keepdims=True)
-    safe_scale = np.maximum(
-        scale.astype(window.dtype, copy=False),
-        epsilon,
-    )
-    return window / safe_scale
+    denominator = scale.astype(window.dtype, copy=False) + epsilon
+    return window / denominator
 
 
 def validate_loader_batch(batch):

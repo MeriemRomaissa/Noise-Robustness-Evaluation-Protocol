@@ -1,24 +1,26 @@
 """Connect CBraMod to the shared pretrained EEG benchmark workflow."""
 
 from pathlib import Path
-from types import SimpleNamespace
 
 from torch import nn
 
 from training_common import (
+    COMMON_BACKBONE_CHECKPOINT_PREFIXES,
     ModelSpec,
     add_repo_to_import_path,
-    load_matching_weights,
+    load_prefixed_checkpoint,
+    namespace_from_config,
     run_experiments,
 )
 
 
-BACKBONE_CHECKPOINT_PREFIXES = (
-    "module.backbone.",
-    "model.backbone.",
-    "backbone.",
-    "module.",
-)
+CBRAMOD_AUTHOR_FIELDS = {
+    "use_pretrained_weights": ("use_pretrained_weights", bool),
+    "classifier": "variant",
+    "dropout": ("dropout", float),
+    "cuda": ("cuda", int),
+    "foundation_dir": "foundation_dir",
+}
 
 
 def build_cbramod_classifier(config: dict) -> nn.Module:
@@ -26,33 +28,19 @@ def build_cbramod_classifier(config: dict) -> nn.Module:
     add_repo_to_import_path(config)
     from models.model_for_tuab import Model
 
-    classifier_variant = config.get("model", {}).get("variant", "all_patch_reps")
+    settings = config["model"]
     # Construct the architecture without implicit weight loading. The shared
     # workflow loads the configured checkpoint and records every matched key.
-    author_settings = SimpleNamespace(
-        use_pretrained_weights=False,
-        classifier=classifier_variant,
-        dropout=0.1,
-        cuda=0,
-        foundation_dir="",
-    )
+    author_settings = namespace_from_config(settings, CBRAMOD_AUTHOR_FIELDS)
     return Model(author_settings)
-
-
-def map_cbramod_checkpoint_key(source_key: str) -> str:
-    """Translate a checkpoint key into CBraMod's downstream backbone namespace."""
-    for prefix in BACKBONE_CHECKPOINT_PREFIXES:
-        if source_key.startswith(prefix):
-            return source_key.removeprefix(prefix)
-    return source_key
 
 
 def load_cbramod_checkpoint(model: nn.Module, checkpoint_path: Path) -> dict:
     """Load mandatory pretrained parameters into the CBraMod backbone."""
-    return load_matching_weights(
+    return load_prefixed_checkpoint(
         target=model.backbone,
         checkpoint_path=checkpoint_path,
-        key_mapper=map_cbramod_checkpoint_key,
+        prefixes=COMMON_BACKBONE_CHECKPOINT_PREFIXES,
     )
 
 

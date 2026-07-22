@@ -12,12 +12,6 @@ from training_common import (
 )
 
 
-EEGPT_CHANNEL_NAMES = [
-    "FP1", "FPZ", "FP2", "F7", "F3", "FZ", "F4", "F8", "T7", "C3",
-    "CZ", "C4", "T8", "P7", "P3", "PZ", "P4", "P8", "O1", "O2",
-]
-
-
 class EEGPTClassifierWrapper(nn.Module):
     """Adapt the author EEGPT classifier to the shared benchmark interface."""
 
@@ -34,13 +28,14 @@ def build_eegpt_classifier(config: dict) -> EEGPTClassifierWrapper:
     add_repo_to_import_path(config)
     from downstream_tueg.Modules.models.EEGPT_mcae_finetune_change import EEGPTClassifier
 
+    settings = config["model"]
     author_model = EEGPTClassifier(
-        num_classes=1,
-        in_channels=23,
-        img_size=[20, 2000],
-        use_channels_names=EEGPT_CHANNEL_NAMES,
-        use_chan_conv=True,
-        use_mean_pooling=True,
+        num_classes=int(settings["num_classes"]),
+        in_channels=int(settings["in_channels"]),
+        img_size=[int(item) for item in settings["img_size"]],
+        use_channels_names=list(settings["channel_names"]),
+        use_chan_conv=bool(settings["use_chan_conv"]),
+        use_mean_pooling=bool(settings["use_mean_pooling"]),
     )
     return EEGPTClassifierWrapper(author_model)
 

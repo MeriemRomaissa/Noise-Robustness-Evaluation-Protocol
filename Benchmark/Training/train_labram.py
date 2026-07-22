@@ -1,6 +1,8 @@
 """Connect LaBraM to the shared pretrained EEG benchmark workflow."""
 
+import importlib
 from pathlib import Path
+import sys
 
 import torch
 from torch import nn
@@ -16,12 +18,13 @@ from training_common import (
 class LaBraMClassifier(nn.Module):
     """Adapt the author LaBraM classifier to the benchmark's model(eeg) interface."""
 
-    def __init__(self, author_model: nn.Module):
+    def __init__(self, author_model: nn.Module, input_chans: torch.Tensor):
         super().__init__()
         self.model = author_model
+        self.register_buffer("input_chans", input_chans.long(), persistent=False)
 
     def forward(self, eeg):
-        input_channels = build_labram_channel_indices(eeg)
+        input_channels = build_labram_channel_indices(eeg, self.input_chans)
         return self.model(eeg, input_chans=input_channels)
 
 
@@ -29,26 +32,43 @@ def build_labram_classifier(config: dict) -> LaBraMClassifier:
     """Build the LaBraM architecture used by the matched TUAB experiment."""
     add_repo_to_import_path(config)
     import modeling_finetune
+    import utils
 
+    settings = config["model"]
+    model_builder = getattr(modeling_finetune, settings["name"])
     # Weight loading remains false here because the shared workflow loads and
     # audits the mandatory checkpoint immediately after model construction.
-    author_model = modeling_finetune.labram_base_d6_patch200_200(
+    author_model = model_builder(
         pretrained=False,
-        num_classes=2,
-        EEG_size=2000,
-        drop_path_rate=0.0,
-        init_values=0.1,
-        qkv_bias=True,
-        use_abs_pos_emb=True,
-        use_rel_pos_bias=False,
+        num_classes=int(settings["num_classes"]),
+        EEG_size=int(settings["EEG_size"]),
+        drop_rate=float(settings["drop_rate"]),
+        attn_drop_rate=float(settings["attn_drop_rate"]),
+        drop_path_rate=float(settings["drop_path_rate"]),
+        init_values=float(settings["init_values"]),
+        qkv_bias=bool(settings["qkv_bias"]),
+        use_abs_pos_emb=bool(settings["use_abs_pos_emb"]),
+        use_rel_pos_bias=bool(settings["use_rel_pos_bias"]),
     )
-    return LaBraMClassifier(author_model)
+    input_chans = torch.tensor(
+        utils.get_input_chans(load_canonical_channel_names()),
+        dtype=torch.long,
+    )
+    return LaBraMClassifier(author_model, input_chans)
 
 
-def build_labram_channel_indices(eeg) -> torch.Tensor:
-    """Follow the author fine-tuning interface for LaBraM channel indices."""
-    number_of_eeg_channels = eeg.shape[1]
-    return torch.arange(number_of_eeg_channels + 1, device=eeg.device)
+def build_labram_channel_indices(eeg, input_chans: torch.Tensor) -> torch.Tensor:
+    """Move LaBraM's author-derived channel indices to the batch device."""
+    return input_chans.to(device=eeg.device)
+
+
+def load_canonical_channel_names() -> list[str]:
+    """Read the 23-channel order used by canonical TUAB preprocessing."""
+    preprocessing_dir = Path(__file__).resolve().parents[1] / "Preprocessing"
+    if str(preprocessing_dir) not in sys.path:
+        sys.path.insert(0, str(preprocessing_dir))
+    canonical_builder = importlib.import_module("build_canonical_tuab")
+    return list(canonical_builder.CANONICAL_CHANNELS)
 
 
 def map_labram_checkpoint_key(source_key: str) -> str:

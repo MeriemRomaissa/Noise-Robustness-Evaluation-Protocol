@@ -42,7 +42,7 @@ def build_h5_loader(
     config: dict, split: str, transform: WindowTransform
 ) -> DataLoader:
     """Connect a model transform to the shared unified60 dataset."""
-    validate_loader_config(config, source="unified60")
+    validate_loader_config(config, source="tuab_unified60")
     split = validate_split(split)
     dataset = Unified60Dataset(config, split, transform)
     return make_dataloader(dataset, config, split)
@@ -67,12 +67,12 @@ def validate_loader_config(config: dict, source: str) -> None:
         raise TypeError(f"config must be a dictionary, got {type(config).__name__}")
 
     required_by_source = {
-        "unified60": ("h5_path", "split_index_path"),
+        "tuab_unified60": ("h5_path", "split_index_path"),
         "original": ("original_data_path",),
     }
     if source not in required_by_source:
         raise ValueError(
-            f"source must be 'unified60' or 'original'; got {source!r}"
+            f"source must be 'tuab_unified60' or 'original'; got {source!r}"
         )
     for key in required_by_source[source]:
         require_config(config, key)

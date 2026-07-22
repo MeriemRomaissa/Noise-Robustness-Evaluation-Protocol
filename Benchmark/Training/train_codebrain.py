@@ -2,24 +2,31 @@
 
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 from torch import nn
 
 from training_common import (
+    COMMON_BACKBONE_CHECKPOINT_PREFIXES,
     ModelSpec,
     add_repo_to_import_path,
-    load_matching_weights,
+    load_prefixed_checkpoint,
+    namespace_from_config,
     run_experiments,
 )
 
 
-BACKBONE_CHECKPOINT_PREFIXES = (
-    "module.backbone.",
-    "model.backbone.",
-    "backbone.",
-    "module.",
-)
+CODEBRAIN_AUTHOR_FIELDS = {
+    "downstream_dataset": "downstream_dataset",
+    "num_of_classes": ("num_of_classes", int),
+    "use_pretrained_weights": ("use_pretrained_weights", bool),
+    "dropout": ("dropout", float),
+    "cuda": ("cuda", int),
+    "foundation_dir": "foundation_dir",
+    "n_layer": ("n_layer", int),
+    "codebook_size_t": ("codebook_size_t", int),
+    "codebook_size_f": ("codebook_size_f", int),
+    "codebook_dim": ("codebook_dim", int),
+}
 
 
 class CodeBrainClassifier(nn.Module):
@@ -49,37 +56,19 @@ def build_codebrain_classifier(config: dict) -> CodeBrainClassifier:
     except ImportError:
         from models.model_for_tuab import Model
 
+    settings = config["model"]
     # Construct the architecture without implicit weight loading. The shared
     # workflow loads the configured checkpoint and records every matched key.
-    author_settings = SimpleNamespace(
-        downstream_dataset="TUAB",
-        num_of_classes=2,
-        use_pretrained_weights=False,
-        dropout=0.1,
-        cuda=0,
-        foundation_dir="",
-        n_layer=8,
-        codebook_size_t=4096,
-        codebook_size_f=4096,
-        codebook_dim=32,
-    )
+    author_settings = namespace_from_config(settings, CODEBRAIN_AUTHOR_FIELDS)
     return CodeBrainClassifier(Model(author_settings))
-
-
-def map_codebrain_checkpoint_key(source_key: str) -> str:
-    """Translate a checkpoint key into CodeBrain's downstream backbone namespace."""
-    for prefix in BACKBONE_CHECKPOINT_PREFIXES:
-        if source_key.startswith(prefix):
-            return source_key.removeprefix(prefix)
-    return source_key
 
 
 def load_codebrain_checkpoint(model: CodeBrainClassifier, checkpoint_path: Path) -> dict:
     """Load mandatory pretrained parameters into the CodeBrain backbone."""
-    return load_matching_weights(
+    return load_prefixed_checkpoint(
         target=model.model.backbone,
         checkpoint_path=checkpoint_path,
-        key_mapper=map_codebrain_checkpoint_key,
+        prefixes=COMMON_BACKBONE_CHECKPOINT_PREFIXES,
     )
 
 

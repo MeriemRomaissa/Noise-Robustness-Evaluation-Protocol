@@ -1,50 +1,78 @@
+# These are the fields to edit.
 paths:
-  model_repo: /path/to/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT
-  checkpoint: EEGPT/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
   h5_file: /path/to/canonical_tuab_full.h5
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/eegpt_pkls
   output: outputs/eegpt
 
 data:
-  source: unified60
-  train_samples: 8192
-  validation_samples: 2048
-  test_samples: 2048
+  source: tuab_unified60
+
+study_case:
+  tuab_mode: subset_tuab  # options: [subset_tuab, full_tuab]
+  channel_mode: 23channels  # options: [23channels, 16channels_zeropadded]
 
 loader:
   batch_size: 64
-  num_workers: 2
-  shuffle_train: true
-  drop_last_train: true
-  pin_memory: true
-
-# Change only this value to run the channel ablation.
-study_case:
-  channel_mode: 23channels  # 23channels or 16channels_zeropadded
 
 training:
   seeds: [0, 42, 123, 256, 512]
   epochs: 15
-  loss: bce_with_logits
-  optimizer: adamw
-  learning_rate: 0.0005
-  weight_decay: 0.05
-  scheduler: none
-  scheduler_step: none
-  minimum_learning_rate: null
-  gradient_clip_norm: null
-  mixed_precision: false
 
-# Choose full_finetune, linear_probe, or lora.
 fine_tuning:
-  strategy: full_finetune
-  lora:
-    rank: 8
-    alpha: 16
-    dropout: 0.0
+  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
 
 evaluation:
   selection_metric: balanced_accuracy
   classification_threshold: 0.5
-  report_metrics: [balanced_accuracy, auroc, auprc]
+  report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
+
+# Locked EEGPT recipe. Do not tune these for benchmark comparisons.
+fixed_recipe:
+  # Sources: EEG-FM/EEGPT/downstream_tueg/finetune_TUAB_EEGPT.sh and
+  # EEG-FM/EEGPT/downstream_tueg/Modules/models/EEGPT_mcae_finetune_change.py.
+  paths:
+    model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT
+    checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
+  loader:
+    num_workers: 2
+    shuffle_train: true
+    drop_last_train: true
+    pin_memory: true
+  model:
+    num_classes: 1
+    in_channels: 23
+    img_size: [20, 2000]
+    use_chan_conv: true
+    use_mean_pooling: true
+    channel_names:
+      - FP1
+      - FPZ
+      - FP2
+      - F7
+      - F3
+      - FZ
+      - F4
+      - F8
+      - T7
+      - C3
+      - CZ
+      - C4
+      - T8
+      - P7
+      - P3
+      - PZ
+      - P4
+      - P8
+      - O1
+      - O2
+  training:
+    loss: bce_with_logits
+    optimizer: adamw
+    learning_rate: 0.0005
+    weight_decay: 0.05
+    scheduler: none
+    scheduler_step: none
+    minimum_learning_rate: null
+    gradient_clip_norm: null
+    mixed_precision: false
