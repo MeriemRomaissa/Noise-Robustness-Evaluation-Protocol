@@ -1,9 +1,11 @@
-# These are the fields to edit.
+# user can edit configures / choose configurable options.
 paths:
   h5_file: /path/to/canonical_tuab_full.h5
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/codebrain_pkls
-  output: outputs/codebrain
+  model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Codebrain
+  checkpoint: /path/to/Checkpoints/CodeBrain.pth
+  output: /path/to/Outputs/CodeBrain
 
 data:
   source: tuab_unified60
@@ -13,49 +15,23 @@ study_case:
 
 loader:
   batch_size: 64
+  num_workers: 8
+  shuffle_train: true # training data should be shuffled
+  drop_last_train: true # usually true for stable training, but can be false for small datasets
+  pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seeds: [0, 42, 123, 256, 512]
+  seed: [0, 42, 123, 256, 512]
   epochs: 15
+
+learning_rate: 0.0001
 
 fine_tuning:
   strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
 
 evaluation:
-  selection_metric: balanced_accuracy
+  selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
 
-# Locked CodeBrain recipe. Do not tune these for benchmark comparisons.
-fixed_recipe:
-  # Sources: EEG-FM/Codebrain/Downstream/finetune_main.py,
-  # Downstream/finetune_trainer.py, and Models/model_for_tuab.py.
-  paths:
-    model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Codebrain
-    checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Codebrain/Checkpoints/CodeBrain.pth
-  loader:
-    num_workers: 8
-    shuffle_train: true
-    drop_last_train: false
-    pin_memory: true
-  model:
-    downstream_dataset: TUAB
-    num_of_classes: 2
-    use_pretrained_weights: false
-    dropout: 0.1
-    cuda: 0
-    foundation_dir: ""
-    n_layer: 8
-    codebook_size_t: 4096
-    codebook_size_f: 4096
-    codebook_dim: 32
-  training:
-    loss: bce_with_logits
-    optimizer: adamw
-    learning_rate: 0.0001
-    weight_decay: 0.0005
-    scheduler: cosine
-    scheduler_step: batch
-    minimum_learning_rate: 0.000001
-    gradient_clip_norm: 5.0
-    mixed_precision: false
+

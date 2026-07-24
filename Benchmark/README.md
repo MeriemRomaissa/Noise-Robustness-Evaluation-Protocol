@@ -19,10 +19,11 @@ The benchmark keeps two kinds of settings separate:
 Benchmark/
 ├── Preprocessing/   Build the canonical EEG windows and split index
 ├── Loader/          Convert stored windows into model-ready tensors
+├── LoaderConfig/    Load one model’s YAML config file and return it as a Python dictionary
 ├── Config/          Reproduction controls plus locked recipe records
-├── StudyCase/        Controlled channel-count case-study transforms
-├── Training/         Model construction, checkpoint loading, and training
-└── Evaluation/       Output files and post-training result readers
+├── StudyCase/       Controlled channel-count case-study transforms
+├── Training/        Model construction, checkpoint loading, and training
+└── Evaluation/      Output files and post-training result readers
 ```
 
 ## Canonical Dataset

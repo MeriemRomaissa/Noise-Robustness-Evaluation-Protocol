@@ -3,7 +3,9 @@ paths:
   h5_file: /path/to/canonical_tuab_full.h5
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/biot_pkls
-  output: outputs/biot
+  model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot
+  checkpoint: /path/to/Checkpoints/Biot/pretrained-models/EEG-PREST-16-channels.ckpt
+  output: /path/to/Outputs/Biot
 
 data:
   source: tuab_unified60
@@ -13,48 +15,20 @@ study_case:
 
 loader:
   batch_size: 64
+  shuffle_train: true # training data should be shuffled
+  drop_last_train: true # usually true for stable training, but can be false for small datasets
+  pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seeds: [0, 42, 123, 256, 512] # run all
+  seed: [0, 42, 123, 256, 512] # run all
   epochs: 15
+
+learning_rate: 0.001
 
 fine_tuning:
   strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
 
 evaluation:
-  selection_metric: balanced_accuracy
+  selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy] # report all
-
-# Locked BIOT recipe. Do not tune these for benchmark comparisons.
-fixed_recipe:
-  # Sources: EEG-FM/Biot/README.md reference TUAB runs,
-  # EEG-FM/Biot/model/biot.py, and EEG-FM/Biot/utils.py.
-  paths:
-    model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot
-    checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot/pretrained-models/EEG-PREST-16-channels.ckpt
-  data:
-    normalization_epsilon: 1.0e-8 #BIOT original code use 1e-8 during robust amplitude normalization
-  loader:
-    num_workers: 8
-    shuffle_train: true
-    drop_last_train: false
-    pin_memory: true
-  model:
-    n_classes: 1
-    n_channels: 16
-    emb_size: 256
-    n_fft: 200
-    hop_length: 100
-    depth: 4
-    heads: 8
-  training:
-    loss: bce_with_logits
-    optimizer: adam
-    learning_rate: 0.001
-    weight_decay: 0.00001
-    scheduler: none
-    scheduler_step: none
-    minimum_learning_rate: null
-    gradient_clip_norm: null
-    mixed_precision: false

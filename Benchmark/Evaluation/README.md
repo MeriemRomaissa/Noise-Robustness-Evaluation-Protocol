@@ -1,6 +1,6 @@
 # Evaluation
 
-`Evaluation/` owns output formats and result readers used after training.
+`Evaluation/` owns output formats and result used after training.
 
 The training loop writes two compatible views of the same run:
 

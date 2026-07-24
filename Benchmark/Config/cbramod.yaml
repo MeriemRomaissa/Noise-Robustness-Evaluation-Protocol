@@ -3,7 +3,9 @@ paths:
   h5_file: /path/to/canonical_tuab_full.h5
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/cbramod_pkls
-  output: outputs/cbramod
+  model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CBraMod
+  checkpoint: /path/to/Checkpoints/CBraMod/pretrained_weights/pretrained_weights.pth
+  output: /path/to/Outputs/CBraMod
 
 data:
   source: tuab_unified60
@@ -13,44 +15,21 @@ study_case:
 
 loader:
   batch_size: 64
+  num_workers: 8
+  shuffle_train: true # training data should be shuffled
+  drop_last_train: true # usually true for stable training, but can be false for small datasets
+  pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seeds: [0, 42, 123, 256, 512]
+  seed: [0, 42, 123, 256, 512]
   epochs: 15
+
+learning_rate: 0.0001
 
 fine_tuning:
   strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
 
 evaluation:
-  selection_metric: balanced_accuracy
+  selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
-
-# Locked CBraMod recipe. Do not tune these for benchmark comparisons.
-fixed_recipe:
-  # Sources: EEG-FM/CBraMod/finetune_main.py, finetune_trainer.py,
-  # and models/model_for_tuab.py.
-  paths:
-    model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CBraMod
-    checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CBraMod/pretrained_weights/pretrained_weights.pth
-  loader:
-    num_workers: 8
-    shuffle_train: true
-    drop_last_train: false
-    pin_memory: true
-  model:
-    variant: all_patch_reps
-    use_pretrained_weights: false
-    dropout: 0.1
-    cuda: 0
-    foundation_dir: ""
-  training:
-    loss: bce_with_logits
-    optimizer: adamw
-    learning_rate: 0.0001
-    weight_decay: 0.05
-    scheduler: cosine
-    scheduler_step: batch
-    minimum_learning_rate: 0.000001
-    gradient_clip_norm: 1.0
-    mixed_precision: false

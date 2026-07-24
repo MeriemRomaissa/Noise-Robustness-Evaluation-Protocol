@@ -1,9 +1,11 @@
-# These are the fields to edit.
+# user can edit configures / choose configurable options.
 paths:
   h5_file: /path/to/canonical_tuab_full.h5
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/eegpt_pkls
-  output: outputs/eegpt
+  model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT
+  checkpoint: /path/to/Checkpoints/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
+  output: /path/to/Outputs/EEGPT
 
 data:
   source: tuab_unified60
@@ -14,65 +16,23 @@ study_case:
 
 loader:
   batch_size: 64
+  num_workers: 8
+  shuffle_train: true # training data should be shuffled
+  drop_last_train: true # usually true for stable training, but can be false for small datasets
+  pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seeds: [0, 42, 123, 256, 512]
+  seed: [0, 42, 123, 256, 512]
   epochs: 15
+
+learning_rate: 0.0005
 
 fine_tuning:
   strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
 
 evaluation:
-  selection_metric: balanced_accuracy
+  selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
 
-# Locked EEGPT recipe. Do not tune these for benchmark comparisons.
-fixed_recipe:
-  # Sources: EEG-FM/EEGPT/downstream_tueg/finetune_TUAB_EEGPT.sh and
-  # EEG-FM/EEGPT/downstream_tueg/Modules/models/EEGPT_mcae_finetune_change.py.
-  paths:
-    model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT
-    checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
-  loader:
-    num_workers: 2
-    shuffle_train: true
-    drop_last_train: true
-    pin_memory: true
-  model:
-    num_classes: 1
-    in_channels: 23
-    img_size: [20, 2000]
-    use_chan_conv: true
-    use_mean_pooling: true
-    channel_names:
-      - FP1
-      - FPZ
-      - FP2
-      - F7
-      - F3
-      - FZ
-      - F4
-      - F8
-      - T7
-      - C3
-      - CZ
-      - C4
-      - T8
-      - P7
-      - P3
-      - PZ
-      - P4
-      - P8
-      - O1
-      - O2
-  training:
-    loss: bce_with_logits
-    optimizer: adamw
-    learning_rate: 0.0005
-    weight_decay: 0.05
-    scheduler: none
-    scheduler_step: none
-    minimum_learning_rate: null
-    gradient_clip_norm: null
-    mixed_precision: false
+
