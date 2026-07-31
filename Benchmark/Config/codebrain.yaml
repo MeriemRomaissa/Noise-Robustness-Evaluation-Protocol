@@ -4,8 +4,10 @@ paths:
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/codebrain_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Codebrain
-  checkpoint: /path/to/Checkpoints/CodeBrain.pth
-  output: /path/to/Outputs/CodeBrain
+  # Expected by EEG-FM/Codebrain/Downstream/finetune_main.py and Models/model_for_tuab.py.
+  # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Codebrain/checkpoints/CodeBrain.pth
+  output: outputs/codebrain
 
 data:
   source: tuab_unified60
@@ -21,17 +23,11 @@ loader:
   pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seed: [0, 42, 123, 256, 512]
+  seeds: [0, 42, 123, 256, 512]
   epochs: 15
-
-learning_rate: 0.0001
-
-fine_tuning:
-  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+  learning_rate: 0.0001
 
 evaluation:
   selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
-
-

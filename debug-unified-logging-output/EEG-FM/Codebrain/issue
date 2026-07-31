@@ -1,0 +1,38 @@
+The reason CodeBrain output is different is already in its script:
+
+```python
+# Codebrain/Downstream/finetune_main.py
+params.model_dir = params.model_dir + params.downstream_dataset + '/'
+params.log_dir = params.log_dir + params.downstream_dataset + '/'
+params.output_dir = params.output_dir + params.downstream_dataset + '/' if params.output_dir else ''
+```
+
+So with:
+
+```bash
+--downstream_dataset TUAB
+--output_dir ./debug_output/CodeBrain/
+```
+
+CodeBrain writes to:
+
+```text
+./debug_output/CodeBrain/TUAB/log.txt
+```
+
+CBraMod and CSBrain do **not** append `TUAB` to `output_dir`, so they write directly to:
+
+```text
+./debug_output/CBraMod/log.txt
+./debug_output/CSBrain/log.txt
+```
+
+The only code patch I made was outside the repo, in the temporary connector:
+
+```text
+/nicoletye/workspace/eegfm_debug_pkl_connector/models/model_for_tuab.py
+```
+
+That was to fix the CodeBrain shape error without editing the GitHub repo.
+
+So the output is not unified because CodeBrain’s own `finetune_main.py` adds the dataset subfolder. To make all three exactly unified, we would need either a small CodeBrain-only patch in the debug repo, or a post-run collector/normalizer script.

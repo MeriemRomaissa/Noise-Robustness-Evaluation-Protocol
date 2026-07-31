@@ -4,8 +4,10 @@ paths:
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/cbramod_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CBraMod
-  checkpoint: /path/to/Checkpoints/CBraMod/pretrained_weights/pretrained_weights.pth
-  output: /path/to/Outputs/CBraMod
+  # Expected by EEG-FM/CBraMod/README.md and model_for_tuab.py.
+  # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CBraMod/pretrained_weights/pretrained_weights.pth
+  output: outputs/cbramod
 
 data:
   source: tuab_unified60
@@ -21,13 +23,24 @@ loader:
   pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seed: [0, 42, 123, 256, 512]
+  seeds: [0, 42, 123, 256, 512]
   epochs: 15
+  learning_rate: 0.0001
 
-learning_rate: 0.0001
-
-fine_tuning:
-  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+fixed_recipe:
+  model:
+    downstream_dataset: TUAB
+    num_of_classes: 2
+    classifier: all_patch_reps
+    dropout: 0.1
+    use_pretrained_weights: true
+  training:
+    weight_decay: 0.05
+    optimizer: AdamW
+    clip_value: 1
+    label_smoothing: 0.1
+    multi_lr: true
+    frozen: false
 
 evaluation:
   selection_metric: roc_auc

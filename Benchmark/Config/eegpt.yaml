@@ -4,8 +4,10 @@ paths:
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/eegpt_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT
-  checkpoint: /path/to/Checkpoints/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
-  output: /path/to/Outputs/EEGPT
+  # Expected by EEG-FM/EEGPT/downstream_tueg/finetune_TUAB_EEGPT.sh.
+  # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/EEGPT/checkpoint/eegpt_mcae_58chs_4s_large4E.ckpt
+  output: outputs/eegpt
 
 data:
   source: tuab_unified60
@@ -22,17 +24,11 @@ loader:
   pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seed: [0, 42, 123, 256, 512]
+  seeds: [0, 42, 123, 256, 512]
   epochs: 15
-
-learning_rate: 0.0005
-
-fine_tuning:
-  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+  learning_rate: 0.0005
 
 evaluation:
   selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
-
-

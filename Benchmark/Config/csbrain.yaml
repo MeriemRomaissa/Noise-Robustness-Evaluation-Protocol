@@ -4,8 +4,10 @@ paths:
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/csbrain_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CSBrain
-  checkpoint: /path/to/Checkpoints/CSBrain.pth
-  output: /path/to/Outputs/CSBrain
+  # Expected by EEG-FM/CSBrain/sh/finetune_CSBrain_TUAB.sh.
+  # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CSBrain/pth/CSBrain.pth
+  output: outputs/csbrain
 
 data:
   source: tuab_unified60
@@ -23,11 +25,7 @@ loader:
 training:
   seeds: [0, 42, 123, 256, 512]
   epochs: 15
-
-learning_rate: 0.0001
-
-fine_tuning:
-  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+  learning_rate: 0.0001
 
 evaluation:
   selection_metric: roc_auc

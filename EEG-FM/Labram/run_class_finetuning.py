@@ -17,6 +17,8 @@ import torch
 import torch.backends.cudnn as cudnn
 import json
 import os
+#newly added codes
+import sys
 
 from pathlib import Path
 from collections import OrderedDict
@@ -32,8 +34,229 @@ import utils
 from scipy import interpolate
 import modeling_finetune
 
+
+#newly added codes
+def _load_yaml_config(config_path):
+    """Load optional Benchmark YAML defaults without replacing CLI overrides."""
+    if not config_path:
+        return {}
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("--config requires PyYAML to be installed") from exc
+
+    path = Path(config_path).expanduser()
+    with path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+#newly added codes
+def _first_seed(value):
+    """Original LaBraM trains one seed per process; YAML may list many."""
+    if isinstance(value, (list, tuple)):
+        return int(value[0]) if value else 0
+    return int(value)
+
+
+#newly added codes
+def _apply_tuab_mode_defaults(config):
+    """Mirror Benchmark subset/full study-case limits for this native script."""
+    study_case = config.get("study_case", {})
+    data = dict(config.get("data", {}))
+    mode = study_case.get("tuab_mode")
+    if mode == "subset_tuab":
+        data.update({
+            "train_samples": 8192,
+            "validation_samples": 2048,
+            "test_samples": 2048,
+        })
+    elif mode == "full_tuab":
+        data.update({
+            "train_samples": None,
+            "validation_samples": None,
+            "test_samples": None,
+        })
+    return data
+
+
+#newly added codes
+def _config_defaults(config):
+    """Translate Benchmark YAML fields to native LaBraM argparse defaults.
+
+    Correction note: YAML values are defaults only. Terminal CLI flags still
+    override them after this mapping.
+    """
+    defaults = {}
+    paths = config.get("paths", {})
+    data = _apply_tuab_mode_defaults(config)
+    study_case = config.get("study_case", {})
+    loader = config.get("loader", {})
+    training = config.get("training", {})
+    fine_tuning = config.get("fine_tuning", {})
+    evaluation = config.get("evaluation", {})
+
+    if paths.get("original_data"):
+        defaults["data_path"] = paths["original_data"]
+    if paths.get("h5_file"):
+        defaults["h5_file"] = paths["h5_file"]
+    if paths.get("split_index"):
+        defaults["split_index"] = paths["split_index"]
+    if paths.get("checkpoint"):
+        defaults["finetune"] = paths["checkpoint"]
+    if paths.get("output"):
+        defaults["output_dir"] = paths["output"]
+        defaults["log_dir"] = str(Path(paths["output"]) / "tensorboard")
+
+    if data.get("source"):
+        defaults["data_source"] = data["source"]
+    if "train_samples" in data:
+        defaults["train_samples"] = data["train_samples"]
+    if "validation_samples" in data:
+        defaults["validation_samples"] = data["validation_samples"]
+    if "test_samples" in data:
+        defaults["test_samples"] = data["test_samples"]
+    if study_case.get("tuab_mode"):
+        defaults["tuab_mode"] = study_case["tuab_mode"]
+    if study_case.get("channel_mode"):
+        defaults["channel_mode"] = study_case["channel_mode"]
+
+    if "batch_size" in loader:
+        defaults["batch_size"] = int(loader["batch_size"])
+    if "num_workers" in loader:
+        defaults["num_workers"] = int(loader["num_workers"])
+    if "pin_memory" in loader:
+        defaults["pin_mem"] = bool(loader["pin_memory"])
+
+    if "epochs" in training:
+        defaults["epochs"] = int(training["epochs"])
+    if "learning_rate" in training:
+        defaults["lr"] = float(training["learning_rate"])
+    if "seed" in training:
+        defaults["seed"] = _first_seed(training["seed"])
+    elif "seeds" in training:
+        defaults["seed"] = _first_seed(training["seeds"])
+
+    strategy = fine_tuning.get("strategy")
+    if strategy:
+        defaults["finetune_strategy"] = "original" if strategy == "full_finetune" else strategy
+    lora = fine_tuning.get("lora", {})
+    if lora:
+        if "rank" in lora:
+            defaults["lora_rank"] = int(lora["rank"])
+        if "alpha" in lora:
+            defaults["lora_alpha"] = float(lora["alpha"])
+        if "layers" in lora:
+            defaults["lora_layers"] = str(lora["layers"])
+        if "target" in lora:
+            defaults["lora_target"] = str(lora["target"])
+
+    if evaluation.get("classification_threshold") is not None:
+        defaults["classification_threshold"] = float(evaluation["classification_threshold"])
+    if evaluation.get("report_metrics"):
+        defaults["report_metrics"] = ",".join(str(item) for item in evaluation["report_metrics"])
+
+    return defaults
+
+
+#newly added codes
+def _optional_int(value):
+    """Allow YAML null/CLI none to mean no split cap."""
+    if value is None or str(value).lower() == "none":
+        return None
+    return int(value)
+
+
+#newly added codes
+def _add_benchmark_paths_to_syspath():
+    """Let this native script reuse Benchmark loaders without moving files."""
+    benchmark_root = Path(__file__).resolve().parents[2] / "Benchmark"
+    for relative_path in (
+        "Loader",
+        "choose_StudyCase/Channel",
+    ):
+        path = benchmark_root / relative_path
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+
+
+#newly added codes
+def _benchmark_unified_h5_transform(window, channel_names=None, config=None):
+    """Apply Benchmark channel case but keep engine input as [23,2000]."""
+    from Labram_23ch_vs_16ch import apply_channel_case
+
+    config = config or {}
+    return apply_channel_case(
+        window,
+        channel_names,
+        config.get("channel_mode", "23channels"),
+    )
+
+
+#newly added codes
+def _benchmark_h5_dataset_config(args, split):
+    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    max_samples = {
+        "train": args.train_samples,
+        "val": args.validation_samples,
+        "test": args.test_samples,
+    }[split]
+    return {
+        "h5_path": args.h5_file,
+        "split_index_path": args.split_index,
+        "max_samples": max_samples,
+        "seed": args.seed,
+        "channel_mode": args.channel_mode,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "pin_memory": args.pin_mem,
+    }
+
+
+#newly added codes
+def _get_benchmark_unified_h5_dataset(args):
+    """Read unified60 H5 rows while preserving the original LaBraM engine path."""
+    _add_benchmark_paths_to_syspath()
+    from loader_common import Unified60Dataset
+
+    if not args.h5_file:
+        raise ValueError("--h5_file is required when --data_source tuab_unified60")
+    if not args.split_index:
+        raise ValueError("--split_index is required when --data_source tuab_unified60")
+
+    train_dataset = Unified60Dataset(
+        _benchmark_h5_dataset_config(args, "train"),
+        "train",
+        _benchmark_unified_h5_transform,
+    )
+    val_dataset = Unified60Dataset(
+        _benchmark_h5_dataset_config(args, "val"),
+        "val",
+        _benchmark_unified_h5_transform,
+    )
+    test_dataset = Unified60Dataset(
+        _benchmark_h5_dataset_config(args, "test"),
+        "test",
+        _benchmark_unified_h5_transform,
+    )
+    ch_names = [name.upper() for name in train_dataset.channel_names]
+    args.nb_classes = 1
+    metrics = [item.strip() for item in args.report_metrics.split(",") if item.strip()]
+    if not metrics:
+        metrics = ["pr_auc", "roc_auc", "accuracy", "balanced_accuracy"]
+    print(
+        "Benchmark unified60 H5 dataset:",
+        f"train={len(train_dataset)}",
+        f"val={len(val_dataset)}",
+        f"test={len(test_dataset)}",
+        f"channel_mode={args.channel_mode}",
+        flush=True,
+    )
+    return train_dataset, test_dataset, val_dataset, ch_names, metrics
+
 def get_args():
     parser = argparse.ArgumentParser('LaBraM fine-tuning and evaluation script for EEG classification', add_help=False)
+    parser.add_argument('--config', default='', type=str,
+                        help='Optional Benchmark YAML. YAML values become defaults; CLI args override them.')
     parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=30, type=int)
     parser.add_argument('--update_freq', default=1, type=int)
@@ -152,6 +375,42 @@ def get_args():
     # Dataset parameters
     parser.add_argument('--nb_classes', default=0, type=int,
                         help='number of the classification types')
+    parser.add_argument('--data_path',
+                        default='/home/meriem-ubuntu/Projects/LaBraM/Datasets_FineTune/tuh_eeg_abnormal/v3.0.1/edf/processed',
+                        help='processed TUAB/TUEV data root. Benchmark YAML paths.original_data maps here.')
+    #newly added codes
+    parser.add_argument('--data_source', default='original', type=str,
+                        choices=['original', 'tuab_unified60'],
+                        help='original uses LaBraM PKLs; tuab_unified60 uses Benchmark H5 loaders.')
+    #newly added codes
+    parser.add_argument('--h5_file', default='', type=str,
+                        help='Benchmark unified60 H5 path when data_source=tuab_unified60.')
+    #newly added codes
+    parser.add_argument('--split_index', default='', type=str,
+                        help='Benchmark split CSV path when data_source=tuab_unified60.')
+    #newly added codes
+    parser.add_argument('--tuab_mode', default='subset_tuab', type=str,
+                        choices=['subset_tuab', 'full_tuab'],
+                        help='Benchmark TUAB study case; controls split sample caps.')
+    #newly added codes
+    parser.add_argument('--channel_mode', default='23channels', type=str,
+                        choices=['23channels', '16channels_zeropadded'],
+                        help='Benchmark channel-count study case for unified H5.')
+    #newly added codes
+    parser.add_argument('--train_samples', default=None, type=_optional_int,
+                        help='Max unified H5 train rows; none means full split.')
+    #newly added codes
+    parser.add_argument('--validation_samples', default=None, type=_optional_int,
+                        help='Max unified H5 validation rows; none means full split.')
+    #newly added codes
+    parser.add_argument('--test_samples', default=None, type=_optional_int,
+                        help='Max unified H5 test rows; none means full split.')
+    #newly added codes
+    parser.add_argument('--classification_threshold', default=0.5, type=float,
+                        help='Benchmark evaluation threshold metadata.')
+    #newly added codes
+    parser.add_argument('--report_metrics', default='pr_auc,roc_auc,accuracy,balanced_accuracy', type=str,
+                        help='Comma-separated metrics for Benchmark unified H5 evaluation.')
 
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
@@ -195,6 +454,10 @@ def get_args():
                         help='dataset: TUAB | TUEV')
 
     known_args, _ = parser.parse_known_args()
+    if known_args.config:
+        # YAML defaults are set after parser construction and before final parse,
+        # so explicit terminal args remain the strongest source of truth.
+        parser.set_defaults(**_config_defaults(_load_yaml_config(known_args.config)))
 
     if known_args.enable_deepspeed:
         try:
@@ -231,15 +494,18 @@ def get_models(args):
 
 
 def get_dataset(args):
+    #newly added codes
+    if args.data_source == 'tuab_unified60':
+        return _get_benchmark_unified_h5_dataset(args)
     if args.dataset == 'TUAB':
-        train_dataset, test_dataset, val_dataset = utils.prepare_TUAB_dataset("/home/meriem-ubuntu/Projects/LaBraM/Datasets_FineTune/tuh_eeg_abnormal/v3.0.1/edf/processed")
+        train_dataset, test_dataset, val_dataset = utils.prepare_TUAB_dataset(args.data_path)
         ch_names = ['EEG FP1', 'EEG FP2-REF', 'EEG F3-REF', 'EEG F4-REF', 'EEG C3-REF', 'EEG C4-REF', 'EEG P3-REF', 'EEG P4-REF', 'EEG O1-REF', 'EEG O2-REF', 'EEG F7-REF', \
                     'EEG F8-REF', 'EEG T3-REF', 'EEG T4-REF', 'EEG T5-REF', 'EEG T6-REF', 'EEG A1-REF', 'EEG A2-REF', 'EEG FZ-REF', 'EEG CZ-REF', 'EEG PZ-REF', 'EEG T1-REF', 'EEG T2-REF']
         ch_names = [name.split(' ')[-1].split('-')[0] for name in ch_names]
         args.nb_classes = 1
         metrics = ["pr_auc", "roc_auc", "accuracy", "balanced_accuracy"]
     elif args.dataset == 'TUEV':
-        train_dataset, test_dataset, val_dataset = utils.prepare_TUEV_dataset("./Datasets_FineTune/tuh_eeg_events/v2.0.1/edf")
+        train_dataset, test_dataset, val_dataset = utils.prepare_TUEV_dataset(args.data_path)
         ch_names = ['EEG FP1-REF', 'EEG FP2-REF', 'EEG F3-REF', 'EEG F4-REF', 'EEG C3-REF', 'EEG C4-REF', 'EEG P3-REF', 'EEG P4-REF', 'EEG O1-REF', 'EEG O2-REF', 'EEG F7-REF', \
                     'EEG F8-REF', 'EEG T3-REF', 'EEG T4-REF', 'EEG T5-REF', 'EEG T6-REF', 'EEG A1-REF', 'EEG A2-REF', 'EEG FZ-REF', 'EEG CZ-REF', 'EEG PZ-REF', 'EEG T1-REF', 'EEG T2-REF']
         ch_names = [name.split(' ')[-1].split('-')[0] for name in ch_names]
@@ -489,7 +755,9 @@ def main(args, ds_init):
         balanced_accuracy = []
         accuracy = []
         for data_loader in data_loader_test:
-            test_stats = evaluate(data_loader, model, device, header='Test:', ch_names=ch_names, metrics=metrics, is_binary=(args.nb_classes == 1))
+            test_stats = evaluate(data_loader, model, device, header='Test:', ch_names=ch_names, metrics=metrics, is_binary=(args.nb_classes == 1),
+                                  #newly added codes
+                                  classification_threshold=args.classification_threshold)
             accuracy.append(test_stats['accuracy'])
             balanced_accuracy.append(test_stats['balanced_accuracy'])
         print(f"======Accuracy: {np.mean(accuracy)} {np.std(accuracy)}, balanced accuracy: {np.mean(balanced_accuracy)} {np.std(balanced_accuracy)}")
@@ -510,7 +778,9 @@ def main(args, ds_init):
             log_writer=log_writer, start_steps=epoch * num_training_steps_per_epoch,
             lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
             num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq, 
-            ch_names=ch_names, is_binary=args.nb_classes == 1
+            ch_names=ch_names, is_binary=args.nb_classes == 1,
+            #newly added codes
+            classification_threshold=args.classification_threshold
         )
         
         if args.output_dir and args.save_ckpt:
@@ -519,9 +789,13 @@ def main(args, ds_init):
                 loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema, save_ckpt_freq=args.save_ckpt_freq)
             
         if data_loader_val is not None:
-            val_stats = evaluate(data_loader_val, model, device, header='Val:', ch_names=ch_names, metrics=metrics, is_binary=args.nb_classes == 1)
+            val_stats = evaluate(data_loader_val, model, device, header='Val:', ch_names=ch_names, metrics=metrics, is_binary=args.nb_classes == 1,
+                                 #newly added codes
+                                 classification_threshold=args.classification_threshold)
             print(f"Accuracy of the network on the {len(dataset_val)} val EEG: {val_stats['accuracy']:.2f}%")
-            test_stats = evaluate(data_loader_test, model, device, header='Test:', ch_names=ch_names, metrics=metrics, is_binary=args.nb_classes == 1)
+            test_stats = evaluate(data_loader_test, model, device, header='Test:', ch_names=ch_names, metrics=metrics, is_binary=args.nb_classes == 1,
+                                  #newly added codes
+                                  classification_threshold=args.classification_threshold)
             print(f"Accuracy of the network on the {len(dataset_test)} test EEG: {test_stats['accuracy']:.2f}%")
             
             if max_accuracy < val_stats["accuracy"]:

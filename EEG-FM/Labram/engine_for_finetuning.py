@@ -33,7 +33,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, log_writer=None,
                     start_steps=None, lr_schedule_values=None, wd_schedule_values=None,
-                    num_training_steps_per_epoch=None, update_freq=None, ch_names=None, is_binary=True):
+                    num_training_steps_per_epoch=None, update_freq=None, ch_names=None, is_binary=True,
+                    classification_threshold=0.5):
     input_chans = None
     if ch_names is not None:
         input_chans = utils.get_input_chans(ch_names)
@@ -116,8 +117,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         torch.cuda.synchronize()
 
         if is_binary:
-            class_acc = utils.get_metrics(torch.sigmoid(output).detach().cpu().numpy(), targets.detach().cpu().numpy(), ["accuracy"], is_binary)["accuracy"]
-            all_preds.append((torch.sigmoid(output).detach().cpu().numpy() >= 0.5).astype(int).flatten())
+            #newly added codes
+            class_acc = utils.get_metrics(torch.sigmoid(output).detach().cpu().numpy(), targets.detach().cpu().numpy(), ["accuracy"], is_binary, classification_threshold)["accuracy"]
+            #newly added codes
+            all_preds.append((torch.sigmoid(output).detach().cpu().numpy() >= classification_threshold).astype(int).flatten())
             all_targets.append(targets.detach().cpu().numpy().astype(int).flatten())
         else:
             preds = output.max(-1)[-1].detach().cpu()
@@ -169,7 +172,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(data_loader, model, device, header='Test:', ch_names=None, metrics=['acc'], is_binary=True):
+def evaluate(data_loader, model, device, header='Test:', ch_names=None, metrics=['acc'], is_binary=True,
+             classification_threshold=0.5):
     input_chans = None
     if ch_names is not None:
         input_chans = utils.get_input_chans(ch_names)
@@ -205,7 +209,8 @@ def evaluate(data_loader, model, device, header='Test:', ch_names=None, metrics=
             output = output.cpu()
         target = target.cpu()
 
-        results = utils.get_metrics(output.numpy(), target.numpy(), metrics, is_binary)
+        #newly added codes
+        results = utils.get_metrics(output.numpy(), target.numpy(), metrics, is_binary, classification_threshold)
         pred.append(output)
         true.append(target)
 
@@ -222,6 +227,7 @@ def evaluate(data_loader, model, device, header='Test:', ch_names=None, metrics=
     pred = torch.cat(pred, dim=0).numpy()
     true = torch.cat(true, dim=0).numpy()
 
-    ret = utils.get_metrics(pred, true, metrics, is_binary, 0.5)
+    #newly added codes
+    ret = utils.get_metrics(pred, true, metrics, is_binary, classification_threshold)
     ret['loss'] = metric_logger.loss.global_avg
     return ret

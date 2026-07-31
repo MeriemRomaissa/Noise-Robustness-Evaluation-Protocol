@@ -4,8 +4,10 @@ paths:
   split_index: /path/to/canonical_split_index.csv
   original_data: /path/to/original/biot_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot
-  checkpoint: /path/to/Checkpoints/Biot/pretrained-models/EEG-PREST-16-channels.ckpt
-  output: /path/to/Outputs/Biot
+  # Expected by EEG-FM/Biot/README.md reference runs.
+  # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot/pretrained-models/EEG-PREST-16-channels.ckpt
+  output: outputs/biot
 
 data:
   source: tuab_unified60
@@ -15,18 +17,30 @@ study_case:
 
 loader:
   batch_size: 64
+  num_workers: 32
   shuffle_train: true # training data should be shuffled
   drop_last_train: true # usually true for stable training, but can be false for small datasets
   pin_memory: true # true if using GPU, false if using CPU
 
 training:
-  seed: [0, 42, 123, 256, 512] # run all
+  seeds: [0, 42, 123, 256, 512] # run all
   epochs: 15
+  learning_rate: 0.001
 
-learning_rate: 0.001
-
-fine_tuning:
-  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+fixed_recipe:
+  model:
+    dataset: TUAB
+    model: BIOT
+    in_channels: 16
+    sample_length: 10
+    n_classes: 1
+    sampling_rate: 200
+    token_size: 200
+    hop_length: 100
+  training:
+    weight_decay: 1.0e-5
+  data:
+    normalization_epsilon: 1.0e-8
 
 evaluation:
   selection_metric: roc_auc

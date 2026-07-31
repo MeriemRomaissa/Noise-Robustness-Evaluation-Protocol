@@ -1,6 +1,10 @@
 import os
 import argparse
 import pickle
+#newly added codes
+import sys
+#newly added codes
+from pathlib import Path
 
 import torch
 from tqdm import tqdm
@@ -23,6 +27,180 @@ from model import (
     BIOTClassifier,
 )
 from utils import TUABLoader, CHBMITLoader, PTBLoader, focal_loss, BCE
+
+
+#newly added codes
+def _load_yaml_config(config_path):
+    """Load optional Benchmark YAML defaults without replacing CLI overrides."""
+    if not config_path:
+        return {}
+    try:
+        import yaml
+    except ImportError as exc:
+        raise RuntimeError("--config requires PyYAML to be installed") from exc
+
+    path = Path(config_path).expanduser()
+    with path.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+#newly added codes
+def _first_seed(value):
+    """Original BIOT trains one seed per process; YAML may list many."""
+    if isinstance(value, (list, tuple)):
+        return int(value[0]) if value else 0
+    return int(value)
+
+
+#newly added codes
+def _apply_tuab_mode_defaults(config):
+    """Mirror Benchmark subset/full study-case limits for this native script."""
+    study_case = config.get("study_case", {})
+    data = dict(config.get("data", {}))
+    mode = study_case.get("tuab_mode")
+    if mode == "subset_tuab":
+        data.update({
+            "train_samples": 8192,
+            "validation_samples": 2048,
+            "test_samples": 2048,
+        })
+    elif mode == "full_tuab":
+        data.update({
+            "train_samples": None,
+            "validation_samples": None,
+            "test_samples": None,
+        })
+    return data
+
+
+#newly added codes
+def _config_defaults(config):
+    """Translate Benchmark YAML fields to native BIOT argparse defaults."""
+    defaults = {}
+    paths = config.get("paths", {})
+    data = _apply_tuab_mode_defaults(config)
+    loader = config.get("loader", {})
+    training = config.get("training", {})
+    fixed_recipe = config.get("fixed_recipe", {})
+    fixed_model = fixed_recipe.get("model", {})
+    fixed_training = fixed_recipe.get("training", {})
+    fixed_data = fixed_recipe.get("data", {})
+
+    if paths.get("original_data"):
+        defaults["data_path"] = paths["original_data"]
+    if paths.get("h5_file"):
+        defaults["h5_file"] = paths["h5_file"]
+    if paths.get("split_index"):
+        defaults["split_index"] = paths["split_index"]
+    if paths.get("checkpoint"):
+        defaults["pretrain_model_path"] = paths["checkpoint"]
+    if paths.get("output"):
+        defaults["output_dir"] = paths["output"]
+
+    if data.get("source"):
+        defaults["data_source"] = data["source"]
+    if "train_samples" in data:
+        defaults["train_samples"] = data["train_samples"]
+    if "validation_samples" in data:
+        defaults["validation_samples"] = data["validation_samples"]
+    if "test_samples" in data:
+        defaults["test_samples"] = data["test_samples"]
+
+    if "batch_size" in loader:
+        defaults["batch_size"] = int(loader["batch_size"])
+    if "num_workers" in loader:
+        defaults["num_workers"] = int(loader["num_workers"])
+    if "pin_memory" in loader:
+        defaults["pin_memory"] = bool(loader["pin_memory"])
+    if "shuffle_train" in loader:
+        defaults["shuffle_train"] = bool(loader["shuffle_train"])
+    if "drop_last_train" in loader:
+        defaults["drop_last_train"] = bool(loader["drop_last_train"])
+
+    if "epochs" in training:
+        defaults["epochs"] = int(training["epochs"])
+    if "learning_rate" in training:
+        defaults["lr"] = float(training["learning_rate"])
+    elif "lr" in training:
+        defaults["lr"] = float(training["lr"])
+    if "seed" in training:
+        defaults["seed"] = _first_seed(training["seed"])
+    elif "seeds" in training:
+        defaults["seed"] = _first_seed(training["seeds"])
+    if "weight_decay" in fixed_training:
+        defaults["weight_decay"] = float(fixed_training["weight_decay"])
+
+    for key in ("dataset", "model", "in_channels", "sample_length", "n_classes",
+                "sampling_rate", "token_size", "hop_length"):
+        if key in fixed_model:
+            defaults[key] = fixed_model[key]
+    if "normalization_epsilon" in fixed_data:
+        defaults["normalization_epsilon"] = float(fixed_data["normalization_epsilon"])
+
+    return defaults
+
+
+#newly added codes
+def _optional_int(value):
+    """Allow YAML null/CLI none to mean no split cap."""
+    if value is None or str(value).lower() == "none":
+        return None
+    return int(value)
+
+
+#newly added codes
+def _add_benchmark_paths_to_syspath():
+    """Let this native script reuse Benchmark loaders without moving files."""
+    benchmark_root = Path(__file__).resolve().parents[2] / "Benchmark"
+    for relative_path in ("Loader",):
+        path = benchmark_root / relative_path
+        if str(path) not in sys.path:
+            sys.path.insert(0, str(path))
+
+
+#newly added codes
+def _benchmark_h5_loader_config(args, split):
+    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    max_samples = {
+        "train": args.train_samples,
+        "val": args.validation_samples,
+        "test": args.test_samples,
+    }[split]
+    return {
+        "h5_path": args.h5_file,
+        "split_index_path": args.split_index,
+        "max_samples": max_samples,
+        "seed": args.seed,
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "pin_memory": args.pin_memory,
+        "shuffle": args.shuffle_train if split == "train" else False,
+        "drop_last": args.drop_last_train if split == "train" else False,
+        "normalization_epsilon": args.normalization_epsilon,
+    }
+
+
+#newly added codes
+def prepare_unified60_dataloader(args):
+    """Read unified60 H5 rows through the Benchmark BIOT loader."""
+    _add_benchmark_paths_to_syspath()
+    from loader_biot import build_unified60_loader
+
+    if not args.h5_file:
+        raise ValueError("--h5_file is required when --data_source tuab_unified60")
+    if not args.split_index:
+        raise ValueError("--split_index is required when --data_source tuab_unified60")
+    train_loader = build_unified60_loader(_benchmark_h5_loader_config(args, "train"), "train")
+    test_loader = build_unified60_loader(_benchmark_h5_loader_config(args, "test"), "test")
+    val_loader = build_unified60_loader(_benchmark_h5_loader_config(args, "val"), "val")
+    print(
+        "Benchmark unified60 H5 dataset:",
+        f"train={len(train_loader.dataset)}",
+        f"val={len(val_loader.dataset)}",
+        f"test={len(test_loader.dataset)}",
+        flush=True,
+    )
+    return train_loader, test_loader, val_loader
 
 
 class LitModel_finetune(pl.LightningModule):
@@ -125,14 +303,22 @@ class LitModel_finetune(pl.LightningModule):
 
 
 def prepare_TUAB_dataloader(args):
+    #newly added codes
+    if args.data_source == "tuab_unified60":
+        return prepare_unified60_dataloader(args)
+
     # set random seed
-    seed = 12345
+    #newly added codes
+    seed = args.seed
     torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    #newly added codes
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
-    root = "/srv/local/data/TUH/tuh3/tuh_eeg_abnormal/v3.0.0/edf/processed"
+    #newly added codes
+    root = args.data_path
 
     train_files = os.listdir(os.path.join(root, "train"))
     np.random.shuffle(train_files)
@@ -147,24 +333,35 @@ def prepare_TUAB_dataloader(args):
         TUABLoader(os.path.join(root, "train"),
                    train_files, args.sampling_rate),
         batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=True,
+        #newly added codes
+        shuffle=args.shuffle_train,
+        #newly added codes
+        drop_last=args.drop_last_train,
         num_workers=args.num_workers,
-        persistent_workers=True,
+        #newly added codes
+        persistent_workers=args.num_workers > 0,
+        #newly added codes
+        pin_memory=args.pin_memory,
     )
     test_loader = torch.utils.data.DataLoader(
         TUABLoader(os.path.join(root, "test"), test_files, args.sampling_rate),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        persistent_workers=True,
+        #newly added codes
+        persistent_workers=args.num_workers > 0,
+        #newly added codes
+        pin_memory=args.pin_memory,
     )
     val_loader = torch.utils.data.DataLoader(
         TUABLoader(os.path.join(root, "val"), val_files, args.sampling_rate),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        persistent_workers=True,
+        #newly added codes
+        persistent_workers=args.num_workers > 0,
+        #newly added codes
+        pin_memory=args.pin_memory,
     )
     print(len(train_loader), len(val_loader), len(test_loader))
     return train_loader, test_loader, val_loader
@@ -330,6 +527,12 @@ def supervised(args):
             hop_length=args.hop_length,
         )
         if args.pretrain_model_path and (args.sampling_rate == 200):
+            #newly added codes
+            if not os.path.isfile(args.pretrain_model_path):
+                raise FileNotFoundError(
+                    "BIOT pretrained checkpoint is configured but missing: "
+                    f"{args.pretrain_model_path}"
+                )
             model.biot.load_state_dict(torch.load(args.pretrain_model_path))
             print(f"load pretrain model from {args.pretrain_model_path}")
 
@@ -340,7 +543,8 @@ def supervised(args):
     # logger and callbacks
     version = f"{args.dataset}-{args.model}-{args.lr}-{args.batch_size}-{args.sampling_rate}-{args.token_size}-{args.hop_length}"
     logger = TensorBoardLogger(
-        save_dir="./",
+        #newly added codes
+        save_dir=args.output_dir,
         version=version,
         name="log",
     )
@@ -350,7 +554,8 @@ def supervised(args):
 
     trainer = pl.Trainer(
         devices=[0],
-        accelerator="gpu",
+        #newly added codes
+        accelerator="gpu" if args.device != "cpu" else "cpu",
         strategy=DDPStrategy(find_unused_parameters=False),
         auto_select_gpus=True,
         benchmark=True,
@@ -374,6 +579,9 @@ def supervised(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    #newly added codes
+    parser.add_argument("--config", type=str, default="",
+                        help="Optional Benchmark YAML. YAML values become defaults; CLI args override them.")
     parser.add_argument("--epochs", type=int, default=100,
                         help="number of epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="learning rate")
@@ -383,6 +591,63 @@ if __name__ == "__main__":
                         default=512, help="batch size")
     parser.add_argument("--num_workers", type=int,
                         default=32, help="number of workers")
+    #newly added codes
+    parser.add_argument("--seed", type=int, default=12345,
+                        help="random seed")
+    #newly added codes
+    parser.add_argument("--data_path", type=str,
+                        default="/srv/local/data/TUH/tuh3/tuh_eeg_abnormal/v3.0.0/edf/processed",
+                        help="processed TUAB data root. Benchmark YAML paths.original_data maps here.")
+    #newly added codes
+    parser.add_argument("--data_source", type=str, default="original",
+                        choices=["original", "tuab_unified60"],
+                        help="original uses BIOT PKLs; tuab_unified60 uses Benchmark H5 loaders.")
+    #newly added codes
+    parser.add_argument("--h5_file", type=str, default="",
+                        help="Benchmark unified60 H5 path when data_source=tuab_unified60.")
+    #newly added codes
+    parser.add_argument("--split_index", type=str, default="",
+                        help="Benchmark split CSV path when data_source=tuab_unified60.")
+    #newly added codes
+    parser.add_argument("--tuab_mode", type=str, default="subset_tuab",
+                        choices=["subset_tuab", "full_tuab"],
+                        help="Benchmark TUAB study case; controls split sample caps.")
+    #newly added codes
+    parser.add_argument("--train_samples", type=_optional_int, default=None,
+                        help="Max unified H5 train rows; none means full split.")
+    #newly added codes
+    parser.add_argument("--validation_samples", type=_optional_int, default=None,
+                        help="Max unified H5 validation rows; none means full split.")
+    #newly added codes
+    parser.add_argument("--test_samples", type=_optional_int, default=None,
+                        help="Max unified H5 test rows; none means full split.")
+    #newly added codes
+    parser.add_argument("--shuffle_train", action="store_true")
+    #newly added codes
+    parser.add_argument("--no_shuffle_train", action="store_false", dest="shuffle_train")
+    #newly added codes
+    parser.set_defaults(shuffle_train=True)
+    #newly added codes
+    parser.add_argument("--drop_last_train", action="store_true")
+    #newly added codes
+    parser.add_argument("--no_drop_last_train", action="store_false", dest="drop_last_train")
+    #newly added codes
+    parser.set_defaults(drop_last_train=True)
+    #newly added codes
+    parser.add_argument("--pin_memory", action="store_true")
+    #newly added codes
+    parser.add_argument("--no_pin_memory", action="store_false", dest="pin_memory")
+    #newly added codes
+    parser.set_defaults(pin_memory=True)
+    #newly added codes
+    parser.add_argument("--normalization_epsilon", type=float, default=1e-8,
+                        help="BIOT robust normalization denominator offset.")
+    #newly added codes
+    parser.add_argument("--output_dir", type=str, default=".",
+                        help="Benchmark output/log root.")
+    #newly added codes
+    parser.add_argument("--device", type=str, default="cuda",
+                        help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default="TUAB", help="dataset")
     parser.add_argument(
         "--model", type=str, default="SPaRCNet", help="which supervised model to use"
@@ -407,6 +672,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrain_model_path", type=str, default="", help="pretrained model path"
     )
+    #newly added codes
+    known_args, _ = parser.parse_known_args()
+    #newly added codes
+    if known_args.config:
+        parser.set_defaults(**_config_defaults(_load_yaml_config(known_args.config)))
     args = parser.parse_args()
     print(args)
 

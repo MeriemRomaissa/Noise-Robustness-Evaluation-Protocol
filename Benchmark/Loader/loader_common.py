@@ -134,8 +134,12 @@ class Unified60Dataset(Dataset):
         self.h5_indices, self.labels = read_split_rows(split_path, split)
         sample_limit = config.get("max_samples")
         if sample_limit is not None:
-            self.h5_indices = self.h5_indices[: int(sample_limit)]
-            self.labels = self.labels[: int(sample_limit)]
+            self.h5_indices, self.labels = select_label_balanced_rows(
+                self.h5_indices,
+                self.labels,
+                int(sample_limit),
+                seed=int(config.get("seed", 0)),
+            )
         self.config = dict(config)
         self.transform = transform
         self._h5 = None
@@ -290,6 +294,53 @@ def read_split_rows(path: str, split: str) -> tuple[np.ndarray, np.ndarray]:
     if min(indices) < 0:
         raise ValueError(f"negative H5 index found for split={split!r} in {path}")
     return np.asarray(indices, dtype=np.int64), np.asarray(labels, dtype=np.int64)
+
+
+def select_label_balanced_rows(
+    indices: np.ndarray, labels: np.ndarray, max_samples: int, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Select a deterministic, label-balanced cap before building a loader."""
+    if max_samples >= len(indices):
+        return indices, labels
+
+    unique_labels = sorted(int(label) for label in np.unique(labels))
+    if max_samples < len(unique_labels):
+        chosen_positions = np.arange(max_samples, dtype=np.int64)
+        return indices[chosen_positions], labels[chosen_positions]
+
+    label_positions = {
+        label: np.flatnonzero(labels == label) for label in unique_labels
+    }
+    total = sum(len(positions) for positions in label_positions.values())
+    quotas = {
+        label: int(np.floor(max_samples * len(positions) / total))
+        for label, positions in label_positions.items()
+    }
+    for label in unique_labels:
+        if quotas[label] == 0 and len(label_positions[label]) > 0:
+            quotas[label] = 1
+
+    while sum(quotas.values()) > max_samples:
+        label = max(
+            unique_labels,
+            key=lambda item: (quotas[item], len(label_positions[item])),
+        )
+        quotas[label] -= 1
+    while sum(quotas.values()) < max_samples:
+        label = max(
+            unique_labels,
+            key=lambda item: len(label_positions[item]) - quotas[item],
+        )
+        quotas[label] += 1
+
+    rng = np.random.default_rng(seed)
+    chosen: list[np.ndarray] = []
+    for label in unique_labels:
+        positions = label_positions[label]
+        count = min(quotas[label], len(positions))
+        chosen.append(rng.choice(positions, size=count, replace=False))
+    chosen_positions = np.sort(np.concatenate(chosen).astype(np.int64))
+    return indices[chosen_positions], labels[chosen_positions]
 
 
 def read_h5_channel_names(h5_file, config: dict | None = None) -> list[str]:

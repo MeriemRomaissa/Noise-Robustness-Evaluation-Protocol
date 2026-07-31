@@ -1,38 +1,65 @@
-# user can edit configures / choose configurable options.
+# User-editable LaBraM run controls.
+# Correction note: EEG-FM/Labram/run_class_finetuning.py now loads this YAML
+# first as argparse defaults. Terminal CLI flags still override YAML values.
 paths:
+  # Used by Benchmark-native loaders. The original LaBraM EDF/PKL trainer does
+  # not consume H5 rows directly.
   h5_file: /path/to/canonical_tuab_full.h5
   split_index: /path/to/canonical_split_index.csv
+
+  # Mapped to the original LaBraM --data_path argument.
   original_data: /path/to/original/labram_pkls
+
+  # Benchmark connector provenance. The connector calls this repo's
+  # EEG-FM/Labram/run_class_finetuning.py directly.
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Labram
-  checkpoint: /path/to/Checkpoints/labram-base.pth
-  output: /path/to/Outputs/Labram
+
+  # Mapped to original LaBraM --finetune.
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Labram/checkpoints/labram-base.pth
+
+  # Mapped to original LaBraM --output_dir; log_dir defaults to output/tensorboard.
+  output: outputs/labram
 
 data:
-  source: tuab_unified60 # for TUAB
+  # Benchmark-native source label. Original LaBraM uses --dataset TUAB plus
+  # paths.original_data, so this value is not passed to the author script.
+  source: tuab_unified60
 
 study_case:
+  # Benchmark-native controls. Original LaBraM ignores these; use a
+  # Benchmark-native trainer for H5/channel ablation study cases.
   tuab_mode: subset_tuab  # options: [subset_tuab, full_tuab]
   channel_mode: 23channels  # options: [23channels, 16channels_zeropadded]
 
 loader:
+  # batch_size/num_workers/pin_memory map to native LaBraM args.
   batch_size: 64
   num_workers: 8
-  shuffle_train: true # training data should be shuffled
-  drop_last_train: true # usually true for stable training, but can be false for small datasets
-  pin_memory: true # true if using GPU, false if using CPU
+  pin_memory: true
+
+  # Correction note: original LaBraM controls shuffle/drop_last internally via
+  # DistributedSampler and train DataLoader(drop_last=True). These are kept for
+  # Benchmark-native runners but are not passed to run_class_finetuning.py.
+  shuffle_train: true
+  drop_last_train: true
 
 training:
-  seed: [0, 42, 123, 256, 512]
+  # Original LaBraM trains one seed per process. If this list is read directly
+  # by run_class_finetuning.py, the first seed is used; runner scripts should
+  # append --seed for each concrete job.
+  seeds: [0, 42, 123, 256, 512]
   epochs: 15
-
-learning_rate: 0.0005
+  learning_rate: 0.0005
 
 fine_tuning:
+  # Mapped to native --finetune_strategy. full_finetune maps to LaBraM's
+  # original strategy name because the author script calls it "original".
   strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
 
 evaluation:
+  # Benchmark-native reporting controls. The original LaBraM script keeps its
+  # TUAB metrics list internally.
   selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
-
 

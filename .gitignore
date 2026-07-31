@@ -80,6 +80,9 @@ dist/
 *.edf
 *.zip
 outputs/
+Benchmark/Outputs/
 task_logs/
+debug_output/
+log/
 __pycache__/
 *.pyc
