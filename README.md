@@ -32,8 +32,12 @@ Old README.md from /Noise-Robustness-Evaluation-Protocol/Benchmark was deleted t
 # yet another new folder produced
 Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/save_finetune_checkpoints was produced from loading TUAB H5 subsets and train finetuning from /Noise-Robustness-Evaluation-Protocol/EEG-FM. The outputs were not unified, but it proves that our benchmark loader scripts work, and it works well with training scripts from /Noise-Robustness-Evaluation-Protocol/EEG-FM.
 
+/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/save_finetune_checkpoints/README_long.md is a document for log metrics, checkpoint saving and file structure. README_short is just the list of log metrics.
+
 # PDF file added
-This pdf shows a table of default training hyperparameters for each model, manually checked from training scripts from /Noise-Robustness-Evaluation-Protocol/EEG-FM.
+/Noise-Robustness-Evaluation-Protocol/TABLE.pdf: This pdf shows a table of default training hyperparameters for each model, manually checked from training scripts from /Noise-Robustness-Evaluation-Protocol/EEG-FM.
+
+/Noise-Robustness-Evaluation-Protocol/output diff.pdf: This pdf shows the diffrences between checkpoints and logs output from /Noise-Robustness-Evaluation-Protocol/Benchmark vs /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output.
 
 # what mainly changed in this repo from last time
 1. /Noise-Robustness-Evaluation-Protocol/Benchmark/Config: I checked though all .yaml files again, so there are code change (just a bit) after our last discussion.
