@@ -64,7 +64,7 @@ build_original_loader(config, split)
 ```
 
 `training_common.py` picks one based on `data.source` in the model's YAML.
-Nothing outside `Loader/` should need to call anything lower-level than these
+Nothing outside `DataLoader/` should need to call anything lower-level than these
 two.
 
 For unified60, one call does: validate config and split → read indices,

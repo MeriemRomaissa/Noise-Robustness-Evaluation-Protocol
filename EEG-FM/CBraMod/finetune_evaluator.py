@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from sklearn.metrics import balanced_accuracy_score, f1_score, confusion_matrix, cohen_kappa_score, roc_auc_score, \
+from sklearn.metrics import balanced_accuracy_score, accuracy_score, f1_score, confusion_matrix, cohen_kappa_score, roc_auc_score, \
     precision_recall_curve, auc, r2_score, mean_squared_error
 from tqdm import tqdm
 
@@ -33,16 +33,20 @@ class Evaluator:
         cm = confusion_matrix(truths, preds)
         return acc, kappa, f1, cm
 
-    def get_metrics_for_binaryclass(self, model):
+    def get_metrics_for_binaryclass(self, model, criterion=None):
         model.eval()
 
         truths = []
         preds = []
         scores = []
-        for x, y in tqdm(self.data_loader, mininterval=1):
+        losses = []
+        with torch.no_grad():
+          for x, y in tqdm(self.data_loader, mininterval=1):
             x = x.cuda()
             y = y.cuda()
             pred = model(x)
+            if criterion is not None:
+                losses.append(criterion(pred, y.float()).item())
             score_y = torch.sigmoid(pred)
             pred_y = torch.gt(score_y, 0.5).long()
             truths += y.long().cpu().squeeze().numpy().tolist()
@@ -52,12 +56,20 @@ class Evaluator:
         truths = np.array(truths)
         preds = np.array(preds)
         scores = np.array(scores)
-        acc = balanced_accuracy_score(truths, preds)
+        bal_acc = balanced_accuracy_score(truths, preds)
+        acc = accuracy_score(truths, preds)
         roc_auc = roc_auc_score(truths, scores)
         precision, recall, thresholds = precision_recall_curve(truths, scores, pos_label=1)
         pr_auc = auc(recall, precision)
         cm = confusion_matrix(truths, preds)
-        return acc, pr_auc, roc_auc, cm
+        return {
+            'balanced_accuracy': float(bal_acc),
+            'accuracy': float(acc),
+            'pr_auc': float(pr_auc),
+            'roc_auc': float(roc_auc),
+            'loss': float(np.mean(losses)) if losses else None,
+            'cm': cm,
+        }
 
     def get_metrics_for_regression(self, model):
         model.eval()

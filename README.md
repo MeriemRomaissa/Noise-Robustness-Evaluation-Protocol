@@ -1,54 +1,116 @@
-what I changed to this repo this past week:
+What I changed to this repo this past week:
 
-# New folder
-Newly added folder: /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output
+# rename folder name
+Rename /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Loader to /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/DataLoader
 
-no code change in scripts, just got output from training finetuning, output paths:
-1. /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM/Labram/debug_output
-2. /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM/EEGPT/debug_output
-3. /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM/CSBrain/debug_output
-4. /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM/Codebrain/debug_output
-5. //Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM/CBraMod
-6. /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM/Biot
+Updated the Benchmark connector references from Loader to DataLoader in:
+EEG-FM/Labram/run_class_finetuning.py
+EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change.py
+EEG-FM/Biot/run_binary_supervised.py
+EEG-FM/CBraMod/finetune_main.py
+EEG-FM/CSBrain/finetune_main.py
+EEG-FM/Codebrain/Downstream/finetune_main.py
+Benchmark/Preprocessing/build_canonical_h5_max_coverage_split.py
+Benchmark/DataLoader/README.md
 
-Newly added document named 'terminal command' under /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output, it only has 6 terminal command used to run training finetuning and get output. 
+# fix log.txt inconsistency issue
+Added missing 'train_balanced_accuracy' metric to CBraMod, CSBrain, CodeBrain and BIOT.
 
-How I got the training done: the idea was not changing any exisiting codes in /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM, but used external connector runner scripts to connect TUAB.pkl subset to the traiing scripts.
+scripts modified:
+debug-unified-logging-output/EEG-FM/CBraMod/finetune_trainer.py
+debug-unified-logging-output/EEG-FM/Codebrain/Downstream/finetune_trainer.py
+debug-unified-logging-output/EEG-FM/CSBrain/finetune_trainer.py
 
-EEGMamba do not have output because AIstation environment conflict. 
+train_min_le and train_loss_scale are LaBraM and EEGPT specific metrics so the other EEG-FM will have log schema fields:
+"train_min_lr": null
+"train_loss_scale": null
 
-Note: needs debugging, will further discuss what to debug.
+# fix repeated-epoch logging issue
+At each run start, log.txt is reset once, then each epoch appends one fresh JSON line, preventing duplicated epoch logs across reruns.
 
-# New lines of code added
-To connect from /Noise-Robustness-Evaluation-Protocol/Benchmark to finetuning scripts in /Noise-Robustness-Evaluation-Protocol/EEG-FM,  a few lines of new codes were added to training scripts in /Noise-Robustness-Evaluation-Protocol/EEG-FM.
+Files changed:
+debug-unified-logging-output/EEG-FM/Labram/run_class_finetuning.py
+debug-unified-logging-output/EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change.py
+debug-unified-logging-output/EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change_tuev.py
+debug-unified-logging-output/EEG-FM/Biot/run_binary_supervised.py
+debug-unified-logging-output/EEG-FM/Biot/run_multiclass_supervised.py
 
-You will know which codes were newly added with #newly added codes.
+# checked
+From /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output, scaler in checkpoint keys is LaBraM/EEGPT training-engine-specific. 
 
-# Deleted files
-Old README.md from /Noise-Robustness-Evaluation-Protocol/Benchmark was deleted to avoid confusion.
+There is no need to add scaler to other EEG-FMs, so no code change needed.
 
-/Noise-Robustness-Evaluation-Protocol-demo/Benchmark/Evaluation was deleted to avoid confusion, there's no use for it if we will have a unified ouput folder such as /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output
+# checked
+Keep the parse_args() blocks from /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/LoaderTraining
 
-# yet another new folder produced
-Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/save_finetune_checkpoints was produced from loading TUAB H5 subsets and train finetuning from /Noise-Robustness-Evaluation-Protocol/EEG-FM. The outputs were not unified, but it proves that our benchmark loader scripts work, and it works well with training scripts from /Noise-Robustness-Evaluation-Protocol/EEG-FM.
+These connector scripts needs this block to let users optionally override YAML values from the terminal.
 
-/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/save_finetune_checkpoints/README_long.md is a document for log metrics, checkpoint saving and file structure. README_short is just the list of log metrics.
+The "default=None" values are intentional. 
+They mean: If user does not type a terminal override,
+do not block YAML or native training-script defaults.
 
-# PDF file added
-/Noise-Robustness-Evaluation-Protocol/TABLE.pdf: This pdf shows a table of default training hyperparameters for each model, manually checked from training scripts from /Noise-Robustness-Evaluation-Protocol/EEG-FM.
+append_if_set() only forwards real user-provided overrides.
 
-/Noise-Robustness-Evaluation-Protocol/output diff.pdf: This pdf shows the diffrences between checkpoints and logs output from /Noise-Robustness-Evaluation-Protocol/Benchmark vs /Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output.
+Notes:
+There are three layers:
+Layer 1: Native training script default
+EEG-FM/Labram/run_class_finetuning.py
+example: --epochs default=30
 
-# what mainly changed in this repo from last time
-1. /Noise-Robustness-Evaluation-Protocol/Benchmark/Config: I checked though all .yaml files again, so there are code change (just a bit) after our last discussion.
-2. I completely rewrote the code in /Noise-Robustness-Evaluation-Protocol/Benchmark/LoaderTraining. Only 6 scripts, the only function is the connector loads YAML as
-defaults through the author script and only appends explicit CLI overrides. You can ignore /Noise-Robustness-Evaluation-Protocol/Benchmark/LoaderTraining/Tests, it was left in the folder to remind me that labram 
+Layer 2: YAML config
+Benchmark/Config/labram.yaml
+example: training.epochs: 15
 
-# This folder will not be used but important to keep
-/Noise-Robustness-Evaluation-Protocol/Benchmark/LoaderTraining/Tests
-There is a README.md to explain the reason why the script in this folder exist.
+Layer 3: Terminal override
+python run_training_labram.py --epochs 2
 
-# Notes for later discussion:
-1. Please look through /Noise-Robustness-Evaluation-Protocol/Benchmark/LoaderTraining. I selected and added in the default params from /Noise-Robustness-Evaluation-Protocol/EEG-FM training scripts. The training runs also work. But I might still miss something. 
-2. /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output was created after running a short real training with 2 epochs. I inspected the outputs, the details need to be discussed face-to-face. 
-3. I think the names of folders and scripts from  /Noise-Robustness-Evaluation-Protocol/Benchmark are not well-written. We shoulld discuss and rename them to avoid confusion. 
+Priority is:
+terminal override > YAML config > native training script default
+
+Examples:
+If user types terminal override:
+python run_training_labram.py --epochs 2
+then final epochs = 2.
+
+If user does not type terminal override, but YAML has:
+training:
+  epochs: 15
+then final epochs = 15.
+
+If user does not type terminal override, and YAML does not contain epochs, then final epochs comes from the native LaBraM script:
+parser.add_argument("--epochs", default=30)
+then final epochs = 30.
+
+Summary: default=None in the runner is what allows YAML/native defaults to still work. If the runner used default=2, then it would always pass --epochs 2 and would accidentally override YAML every time.
+
+# merge training scripts
+From /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM and /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM
+
+main target folder: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM
+
+Two conflicts found and resolved.
+
+Conflict 1: CodeBrain folder layout resolved 
+CodeBrain: debug_output/CodeBrain/TUAB/log.txt to debug_output/CodeBrain/log.txt
+Others:    debug_output/<Model>/log.txt
+
+Conflict 2: EEG-FM/Biot/run_binary_supervised.py imports resolved
+Final import set keeps all imports from EEG-FM/Biot/run_binary_supervised.py
+import json
+import sys
+from pathlib import Path
+
+The merge preserved:
+-Benchmark/H5 loader connector logic from the main EEG-FM
+-Unified output/logging/checkpoint behavior from debug-unified-logging-output
+-Consistent log.txt schema
+
+Note:
+schema = same metric columns inside log.txt
+layout = same folder/file path pattern on disk
+
+# removed 
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM
+
+# commit and pushed to github
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol

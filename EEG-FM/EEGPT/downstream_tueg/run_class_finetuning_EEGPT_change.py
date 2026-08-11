@@ -308,7 +308,7 @@ def _add_benchmark_paths_to_syspath():
     """Let this native script reuse Benchmark loaders without moving files."""
     benchmark_root = Path(__file__).resolve().parents[3] / "Benchmark"
     for relative_path in (
-        "Loader",
+        "DataLoader",
         "choose_StudyCase/Channel",
     ):
         path = benchmark_root / relative_path
@@ -331,7 +331,7 @@ def _benchmark_unified_h5_transform(window, channel_names=None, config=None):
 
 #newly added codes
 def _benchmark_h5_dataset_config(args, split):
-    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    """Build the flat config expected by Benchmark/DataLoader/loader_common.py."""
     max_samples = {
         "train": args.train_samples,
         "val": args.validation_samples,
@@ -1012,4 +1012,6 @@ if __name__ == '__main__':
     opts, ds_init = get_args()
     if opts.output_dir:
         Path(opts.output_dir).mkdir(parents=True, exist_ok=True)
+        if utils.is_main_process():
+            open(os.path.join(opts.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
     main(opts, ds_init)

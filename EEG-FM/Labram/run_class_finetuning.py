@@ -171,7 +171,7 @@ def _add_benchmark_paths_to_syspath():
     """Let this native script reuse Benchmark loaders without moving files."""
     benchmark_root = Path(__file__).resolve().parents[2] / "Benchmark"
     for relative_path in (
-        "Loader",
+        "DataLoader",
         "choose_StudyCase/Channel",
     ):
         path = benchmark_root / relative_path
@@ -194,7 +194,7 @@ def _benchmark_unified_h5_transform(window, channel_names=None, config=None):
 
 #newly added codes
 def _benchmark_h5_dataset_config(args, split):
-    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    """Build the flat config expected by Benchmark/DataLoader/loader_common.py."""
     max_samples = {
         "train": args.train_samples,
         "val": args.validation_samples,
@@ -767,6 +767,8 @@ def main(args, ds_init):
     start_time = time.time()
     max_accuracy = 0.0
     max_accuracy_test = 0.0
+    max_roc_auc = 0.0
+    max_roc_auc_test = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -798,15 +800,24 @@ def main(args, ds_init):
                                   classification_threshold=args.classification_threshold)
             print(f"Accuracy of the network on the {len(dataset_test)} test EEG: {test_stats['accuracy']:.2f}%")
             
-            if max_accuracy < val_stats["accuracy"]:
-                max_accuracy = val_stats["accuracy"]
-                if args.output_dir and args.save_ckpt:
-                    utils.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
-                max_accuracy_test = test_stats["accuracy"]
-
-            print(f'Max accuracy val: {max_accuracy:.2f}%, max accuracy test: {max_accuracy_test:.2f}%')
+            if args.nb_classes == 1:  # binary: select on ROC-AUC
+                if max_roc_auc < val_stats["roc_auc"]:
+                    max_roc_auc = val_stats["roc_auc"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+                    max_roc_auc_test = test_stats["roc_auc"]
+                print(f'Max ROC-AUC val: {max_roc_auc:.4f}, max ROC-AUC test: {max_roc_auc_test:.4f}')
+            else:  # multiclass: select on accuracy
+                if max_accuracy < val_stats["accuracy"]:
+                    max_accuracy = val_stats["accuracy"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+                    max_accuracy_test = test_stats["accuracy"]
+                print(f'Max accuracy val: {max_accuracy:.2f}%, max accuracy test: {max_accuracy_test:.2f}%')
             if log_writer is not None:
                 for key, value in val_stats.items():
                     if key == 'accuracy':
@@ -864,4 +875,6 @@ if __name__ == '__main__':
     opts, ds_init = get_args()
     if opts.output_dir:
         Path(opts.output_dir).mkdir(parents=True, exist_ok=True)
+        if utils.is_main_process():
+            open(os.path.join(opts.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
     main(opts, ds_init)

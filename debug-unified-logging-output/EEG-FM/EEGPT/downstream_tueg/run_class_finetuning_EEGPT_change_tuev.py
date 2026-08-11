@@ -590,4 +590,6 @@ if __name__ == '__main__':
     opts, ds_init = get_args()
     if opts.output_dir:
         Path(opts.output_dir).mkdir(parents=True, exist_ok=True)
+        if utils.is_main_process():
+            open(os.path.join(opts.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
     main(opts, ds_init)

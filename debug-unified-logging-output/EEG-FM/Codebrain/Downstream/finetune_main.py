@@ -65,7 +65,10 @@ def main():
     params = parser.parse_args()
     params.model_dir = params.model_dir + params.downstream_dataset + '/'
     params.log_dir = params.log_dir + params.downstream_dataset + '/'
-    params.output_dir = params.output_dir + params.downstream_dataset + '/' if params.output_dir else ''
+    params.output_dir = params.output_dir if params.output_dir else ''
+    if params.output_dir:
+        os.makedirs(params.output_dir, exist_ok=True)
+        open(os.path.join(params.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
     current_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
     params.file_name = str(params.log_dir) + str(current_time) + "_" + str(params.cuda) + ".txt"
     print(params)

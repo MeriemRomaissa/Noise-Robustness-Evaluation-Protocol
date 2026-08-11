@@ -1,6 +1,7 @@
 import os
 import argparse
 import pickle
+import json
 #newly added codes
 import sys
 #newly added codes
@@ -152,7 +153,7 @@ def _optional_int(value):
 def _add_benchmark_paths_to_syspath():
     """Let this native script reuse Benchmark loaders without moving files."""
     benchmark_root = Path(__file__).resolve().parents[2] / "Benchmark"
-    for relative_path in ("Loader",):
+    for relative_path in ("DataLoader",):
         path = benchmark_root / relative_path
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
@@ -160,7 +161,7 @@ def _add_benchmark_paths_to_syspath():
 
 #newly added codes
 def _benchmark_h5_loader_config(args, split):
-    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    """Build the flat config expected by Benchmark/DataLoader/loader_common.py."""
     max_samples = {
         "train": args.train_samples,
         "val": args.validation_samples,
@@ -209,13 +210,111 @@ class LitModel_finetune(pl.LightningModule):
         self.model = model
         self.threshold = 0.5
         self.args = args
+        self.n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        self._train_probs = []
+        self._train_targets = []
+        self._train_losses = []
+        self._latest_train_metrics = {}
+        self.test_loader_for_epoch_logging = None
+
+    def on_train_epoch_start(self):
+        self._train_probs = []
+        self._train_targets = []
+        self._train_losses = []
 
     def training_step(self, batch, batch_idx):
         X, y = batch
         prob = self.model(X)
         loss = BCE(prob, y)  # focal_loss(prob, y)
+        with torch.no_grad():
+            self._train_probs.append(torch.sigmoid(prob.detach()).cpu())
+            self._train_targets.append(y.detach().cpu())
+            self._train_losses.append(float(loss.detach().cpu()))
         self.log("train_loss", loss)
         return loss
+
+    def training_epoch_end(self, training_step_outputs):
+        if not self._train_probs:
+            return
+        result = torch.cat([x.reshape(-1) for x in self._train_probs]).numpy()
+        gt = torch.cat([x.reshape(-1) for x in self._train_targets]).numpy()
+        metrics = self._binary_metrics(result, gt, threshold=0.5)
+        self._latest_train_metrics = {
+            "loss": float(np.mean(self._train_losses)) if self._train_losses else None,
+            "accuracy": metrics["accuracy"],
+            "balanced_accuracy": metrics["balanced_accuracy"],
+        }
+        self.log("train_acc", metrics["accuracy"], sync_dist=True)
+        self.log("train_bacc", metrics["balanced_accuracy"], sync_dist=True)
+
+    def _binary_metrics(self, result, gt, threshold):
+        if sum(gt) * (len(gt) - sum(gt)) != 0:
+            return binary_metrics_fn(
+                gt,
+                result,
+                metrics=["pr_auc", "roc_auc", "accuracy", "balanced_accuracy"],
+                threshold=threshold,
+            )
+        return {
+            "accuracy": 0.0,
+            "balanced_accuracy": 0.0,
+            "pr_auc": 0.0,
+            "roc_auc": 0.0,
+        }
+
+    def _evaluate_loader_for_binaryclass(self, data_loader):
+        result = np.array([])
+        gt = np.array([])
+        losses = []
+        was_training = self.model.training
+        self.model.eval()
+        with torch.no_grad():
+            for X, y in data_loader:
+                X = X.to(self.device)
+                y = y.to(self.device)
+                prob = self.model(X)
+                losses.append(float(BCE(prob, y).detach().cpu()))
+                result = np.append(result, torch.sigmoid(prob).detach().cpu().numpy())
+                gt = np.append(gt, y.detach().cpu().numpy())
+        if was_training:
+            self.model.train()
+        metrics = self._binary_metrics(result, gt, threshold=self.threshold)
+        metrics["loss"] = float(np.mean(losses)) if losses else None
+        return metrics
+
+    def _write_epoch_log(self, val_metrics, test_metrics):
+        if not self.args.output_dir:
+            return
+        if getattr(self.trainer, "sanity_checking", False):
+            return
+        os.makedirs(self.args.output_dir, exist_ok=True)
+        optimizers = getattr(self.trainer, "optimizers", [])
+        train_lr = optimizers[0].param_groups[0]["lr"] if optimizers else self.args.lr
+        train_metrics = self._latest_train_metrics
+        log_stats = {
+            "train_loss": train_metrics.get("loss"),
+            "train_lr": train_lr,
+            "train_min_lr": None,
+            "train_loss_scale": None,
+            "train_weight_decay": float(self.args.weight_decay),
+            "train_class_acc": train_metrics.get("accuracy"),
+            "train_balanced_accuracy": train_metrics.get("balanced_accuracy"),
+            "train_grad_norm": None,
+            "val_pr_auc": val_metrics.get("pr_auc"),
+            "val_roc_auc": val_metrics.get("roc_auc"),
+            "val_accuracy": val_metrics.get("accuracy"),
+            "val_balanced_accuracy": val_metrics.get("balanced_accuracy"),
+            "val_loss": val_metrics.get("loss"),
+            "test_pr_auc": test_metrics.get("pr_auc"),
+            "test_roc_auc": test_metrics.get("roc_auc"),
+            "test_accuracy": test_metrics.get("accuracy"),
+            "test_balanced_accuracy": test_metrics.get("balanced_accuracy"),
+            "test_loss": test_metrics.get("loss"),
+            "epoch": int(self.current_epoch),
+            "n_parameters": self.n_parameters,
+        }
+        with open(os.path.join(self.args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+            f.write(json.dumps(log_stats) + "\n")
 
     def validation_step(self, batch, batch_idx):
         X, y = batch
@@ -223,14 +322,18 @@ class LitModel_finetune(pl.LightningModule):
             prob = self.model(X)
             step_result = torch.sigmoid(prob).cpu().numpy()
             step_gt = y.cpu().numpy()
-        return step_result, step_gt
+            step_loss = float(BCE(prob, y).detach().cpu())
+        return step_result, step_gt, step_loss
 
     def validation_epoch_end(self, val_step_outputs):
         result = np.array([])
         gt = np.array([])
+        losses = []
         for out in val_step_outputs:
             result = np.append(result, out[0])
             gt = np.append(gt, out[1])
+            if len(out) > 2:
+                losses.append(out[2])
 
         if (
             sum(gt) * (len(gt) - sum(gt)) != 0
@@ -249,11 +352,16 @@ class LitModel_finetune(pl.LightningModule):
                 "pr_auc": 0.0,
                 "roc_auc": 0.0,
             }
+        result["loss"] = float(np.mean(losses)) if losses else None
         self.log("val_acc", result["accuracy"], sync_dist=True)
         self.log("val_bacc", result["balanced_accuracy"], sync_dist=True)
         self.log("val_pr_auc", result["pr_auc"], sync_dist=True)
         self.log("val_auroc", result["roc_auc"], sync_dist=True)
         print(result)
+        test_result = {}
+        if self.test_loader_for_epoch_logging is not None:
+            test_result = self._evaluate_loader_for_binaryclass(self.test_loader_for_epoch_logging)
+        self._write_epoch_log(result, test_result)
 
     def test_step(self, batch, batch_idx):
         X, y = batch
@@ -261,14 +369,18 @@ class LitModel_finetune(pl.LightningModule):
             convScore = self.model(X)
             step_result = torch.sigmoid(convScore).cpu().numpy()
             step_gt = y.cpu().numpy()
-        return step_result, step_gt
+            step_loss = float(BCE(convScore, y).detach().cpu())
+        return step_result, step_gt, step_loss
 
     def test_epoch_end(self, test_step_outputs):
         result = np.array([])
         gt = np.array([])
+        losses = []
         for out in test_step_outputs:
             result = np.append(result, out[0])
             gt = np.append(gt, out[1])
+            if len(out) > 2:
+                losses.append(out[2])
         if (
             sum(gt) * (len(gt) - sum(gt)) != 0
         ):  # to prevent all 0 or all 1 and raise the AUROC error
@@ -285,6 +397,7 @@ class LitModel_finetune(pl.LightningModule):
                 "pr_auc": 0.0,
                 "roc_auc": 0.0,
             }
+        result["loss"] = float(np.mean(losses)) if losses else None
         self.log("test_acc", result["accuracy"], sync_dist=True)
         self.log("test_bacc", result["balanced_accuracy"], sync_dist=True)
         self.log("test_pr_auc", result["pr_auc"], sync_dist=True)
@@ -539,6 +652,7 @@ def supervised(args):
     else:
         raise NotImplementedError
     lightning_model = LitModel_finetune(args, model)
+    lightning_model.test_loader_for_epoch_logging = test_loader
 
     # logger and callbacks
     version = f"{args.dataset}-{args.model}-{args.lr}-{args.batch_size}-{args.sampling_rate}-{args.token_size}-{args.hop_length}"
@@ -679,5 +793,8 @@ if __name__ == "__main__":
         parser.set_defaults(**_config_defaults(_load_yaml_config(known_args.config)))
     args = parser.parse_args()
     print(args)
+    if args.output_dir:
+        os.makedirs(args.output_dir, exist_ok=True)
+        open(os.path.join(args.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
 
     supervised(args)

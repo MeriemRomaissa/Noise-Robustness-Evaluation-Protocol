@@ -161,7 +161,7 @@ def _str_to_bool(value):
 def _add_benchmark_paths_to_syspath():
     """Let this native script reuse Benchmark loaders without moving files."""
     benchmark_root = Path(__file__).resolve().parents[2] / "Benchmark"
-    for relative_path in ("Loader",):
+    for relative_path in ("DataLoader",):
         path = benchmark_root / relative_path
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
@@ -169,7 +169,7 @@ def _add_benchmark_paths_to_syspath():
 
 #newly added codes
 def _benchmark_h5_loader_config(params, split):
-    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    """Build the flat config expected by Benchmark/DataLoader/loader_common.py."""
     max_samples = {
         "train": params.train_samples,
         "val": params.validation_samples,
@@ -263,6 +263,9 @@ def main():
                         help='datasets_dir')
     parser.add_argument('--num_of_classes', type=int, default=2, help='number of classes')
     parser.add_argument('--model_dir', type=str, default='/data/wjq/models_weights/Big/BigFaced', help='model_dir')
+    parser.add_argument('--log_dir', type=str, default='', help='directory for TensorBoard logs')
+    parser.add_argument('--output_dir', type=str, default='', help='directory for log.txt and checkpoints')
+    parser.add_argument('--save_ckpt_freq', type=int, default=0, help='also save checkpoint-N.pth every N epochs (0=disabled)')
     """############ Downstream dataset settings ############"""
 
     parser.add_argument('--num_workers', type=int, default=16, help='num_workers')
@@ -313,6 +316,10 @@ def main():
     parser.set_defaults(**config_defaults)
     #newly added codes
     params = parser.parse_args(remaining_args)
+    #newly added codes
+    if params.output_dir:
+        os.makedirs(params.output_dir, exist_ok=True)
+        open(os.path.join(params.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
     print(params)
 
     setup_seed(params.seed)

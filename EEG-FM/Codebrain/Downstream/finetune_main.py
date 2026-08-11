@@ -118,6 +118,7 @@ def _config_defaults(config):
     if paths.get("output"):
         defaults["model_dir"] = str(Path(paths["output"]) / "checkpoints")
         defaults["log_dir"] = str(Path(paths["output"]) / "logs")
+        defaults["output_dir"] = paths["output"]
 
     if data.get("source"):
         defaults["data_source"] = data["source"]
@@ -201,7 +202,7 @@ def _find_benchmark_root():
 def _add_benchmark_paths_to_syspath():
     """Let this native script reuse Benchmark loaders without moving files."""
     benchmark_root = _find_benchmark_root()
-    for relative_path in ("Loader",):
+    for relative_path in ("DataLoader",):
         path = benchmark_root / relative_path
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
@@ -209,7 +210,7 @@ def _add_benchmark_paths_to_syspath():
 
 #newly added codes
 def _benchmark_h5_loader_config(params, split):
-    """Build the flat config expected by Benchmark/Loader/loader_common.py."""
+    """Build the flat config expected by Benchmark/DataLoader/loader_common.py."""
     max_samples = {
         "train": params.train_samples,
         "val": params.validation_samples,
@@ -313,6 +314,13 @@ def main():
     parser.add_argument('--log_dir', type=str,
                         default='',
                         help='log_dir')
+    #newly added codes
+    parser.add_argument('--output_dir', type=str,
+                        default='',
+                        help='directory for unified log.txt and checkpoints')
+    #newly added codes
+    parser.add_argument('--save_ckpt_freq', type=int, default=0,
+                        help='also save checkpoint-N.pth every N epochs (0=disabled)')
 
     parser.add_argument('--num_workers', type=int, default=16, help='num_workers')
     parser.add_argument('--label_smoothing', type=float, default=0.1, help='label_smoothing')
@@ -372,6 +380,10 @@ def main():
     params = parser.parse_args(remaining_args)
     params.model_dir = os.path.join(params.model_dir, params.downstream_dataset) + '/'
     params.log_dir = os.path.join(params.log_dir, params.downstream_dataset) + '/'
+    #newly added codes
+    if params.output_dir:
+        os.makedirs(params.output_dir, exist_ok=True)
+        open(os.path.join(params.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
     os.makedirs(params.model_dir, exist_ok=True)
     os.makedirs(params.log_dir, exist_ok=True)
     current_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")

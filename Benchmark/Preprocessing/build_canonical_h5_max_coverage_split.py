@@ -7,7 +7,7 @@ subjects are preferred as groups; recording groups are used when subject
 metadata is unavailable. The LaBraM train-to-validation ratio defines the
 target size, while every canonical H5 window remains assigned to one split.
 
-Outputs retain the contract consumed by Loader/loader_common.py:
+Outputs retain the contract consumed by DataLoader/loader_common.py:
 
 * canonical_h5_labram_referenced_max_coverage_split_index.csv
 * canonical_h5_labram_referenced_max_coverage_split_index.json

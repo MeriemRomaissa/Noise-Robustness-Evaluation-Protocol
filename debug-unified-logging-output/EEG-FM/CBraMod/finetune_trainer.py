@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss, MSELoss
 from tqdm import tqdm
+from sklearn.metrics import balanced_accuracy_score
 
 from finetune_evaluator import Evaluator
 
@@ -194,6 +195,8 @@ class Trainer(object):
             start_time = timer()
             losses = []
             train_accs = []
+            train_preds = []
+            train_targets = []
             grad_norms = []
             for x, y in tqdm(self.data_loader['train'], mininterval=10):
                 self.optimizer.zero_grad()
@@ -213,6 +216,8 @@ class Trainer(object):
                     score_y = torch.sigmoid(pred.detach())
                     pred_y = torch.gt(score_y, 0.5).long()
                     train_accs.append((pred_y.squeeze() == y.long().squeeze()).float().mean().item())
+                    train_preds.extend(np.asarray(pred_y.detach().cpu()).reshape(-1).astype(int).tolist())
+                    train_targets.extend(np.asarray(y.detach().cpu()).reshape(-1).astype(int).tolist())
                 self.optimizer.step()
                 self.optimizer_scheduler.step()
 
@@ -244,8 +249,11 @@ class Trainer(object):
                     log_stats = {
                         'train_loss': float(np.mean(losses)),
                         'train_lr': optim_state['param_groups'][0]['lr'],
+                        'train_min_lr': None,
+                        'train_loss_scale': None,
                         'train_weight_decay': float(self.params.weight_decay),
                         'train_class_acc': float(np.mean(train_accs)) if train_accs else None,
+                        'train_balanced_accuracy': float(balanced_accuracy_score(train_targets, train_preds)) if train_targets else None,
                         'train_grad_norm': float(np.mean(grad_norms)) if grad_norms else None,
                         'val_pr_auc': vm['pr_auc'], 'val_roc_auc': vm['roc_auc'],
                         'val_accuracy': vm['accuracy'], 'val_balanced_accuracy': vm['balanced_accuracy'],

@@ -376,5 +376,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="", help="directory for log.txt and checkpoints")
     args = parser.parse_args()
     print(args)
+    if args.output_dir:
+        os.makedirs(args.output_dir, exist_ok=True)
+        open(os.path.join(args.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
 
     supervised(args)
