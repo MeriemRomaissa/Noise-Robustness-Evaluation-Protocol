@@ -112,5 +112,7 @@ layout = same folder/file path pattern on disk
 # removed 
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output/EEG-FM
 
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/output diff.pdf
+
 # commit and pushed to github
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol
