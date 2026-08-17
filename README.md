@@ -114,5 +114,105 @@ layout = same folder/file path pattern on disk
 
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/output diff.pdf
 
+# new folder added
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Inference
+
+this folder has 6 inference scripts:
+Benchmark/Inference/run_inference_labram.py
+Benchmark/Inference/run_inference_eegpt.py
+Benchmark/Inference/run_inference_biot.py
+Benchmark/Inference/run_inference_cbramod.py
+Benchmark/Inference/run_inference_csbrain.py
+Benchmark/Inference/run_inference_codebrain.py
+
+scripts include Full finetuning, LORA, EEGNet, will later include ATCNet and ShallowFBCSPNet.
+
+# new folder and file added
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Plotting/plot_nmt_ood_results.py
+
+this script makes plots.
+Reads saved nmt_ood_results.json files from Benchmark/Inference.
+
+output:
+nmt_ood_accuracy.png/pdf
+nmt_ood_balanced_accuracy.png/pdf
+nmt_ood_roc_auc.png/pdf
+nmt_ood_pr_auc.png/pdf
+clean_vs_nmt_ood_accuracy.png/pdf
+clean_vs_nmt_ood_balanced_accuracy.png/pdf
+clean_vs_nmt_ood_roc_auc.png/pdf
+clean_vs_nmt_ood_pr_auc.png/pdf
+nmt_ood_relative_robustness.png/pdf
+nmt_ood_accuracy_drop.png/pdf
+nmt_ood_plot_records.csv
+nmt_ood_plot_records.json
+
+plot command:
+cd /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol
+
+python Benchmark/Plotting/plot_nmt_ood_results.py \
+  --input_glob "Benchmark/Outputs/**/nmt_ood_results.json" \
+  --output_dir Benchmark/Outputs/nmt_ood_plots
+
+
+# new files created for NMT dataset
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Preprocessing/preprocess_nmt_to_labram_ood.py
+
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/DataLoader/loader_nmt_ood.py
+
+loader_nmt_ood.py is the shared NMT OOD data connector between NMT preprocessing and the six model-specific inference scripts.
+
+
+# test run NMT subset
+All six inference run succeeded.
+
+output results are saved under /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/nmt_ood_inference_smoke
+
+Each model folder now has:
+log.txt
+metrics.json
+nmt_ood_results.json
+
+Each log.txt has 2 JSON lines:
+1. <Model> Full FT on NMT_OOD
+2. EEGNet on NMT_OOD
+
+example terminal command:
+extract the EEGNet block into the standalone JSON format expected by the inference scripts:
+cd /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol && \
+mkdir -p Benchmark/Outputs/nmt_ood_baselines && \
+python - <<'PY'
+import json
+from pathlib import Path
+
+src = Path("/nicoletye/workspace/Labram_with_finetuning_adaptors/Labram with finetuning adaptors/Overfitting_Evaluation/Results/NMT_OOD/nmt_ood_results.json")
+dst = Path("Benchmark/Outputs/nmt_ood_baselines/nmt_eegnet_results.json")
+
+data = json.loads(src.read_text())
+eegnet_nmt = data["eegnet"]["nmt_ood"]
+dst.write_text(json.dumps(eegnet_nmt, indent=2) + "\n")
+print(dst.resolve())
+print(json.dumps(eegnet_nmt, indent=2))
+PY
+
+BIOT inference test run:
+cd /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol && \
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+PYTHONUNBUFFERED=1 \
+/nicoletye/venvs/biot_env/bin/python Benchmark/Inference/run_inference_biot.py \
+  --checkpoint Benchmark/Outputs/save_finetune_checkpoints/biot/log/TUAB-BIOT-0.001-8-200-200-100/checkpoints/epoch=1-step=16.ckpt \
+  --eegnet_json Benchmark/Outputs/nmt_ood_baselines/nmt_eegnet_results.json \
+  --nmt_dir /nicoletye/workspace/nmt_scalp_eeg_labram_ood/test \
+  --output_dir Benchmark/Outputs/nmt_ood_inference_smoke/biot \
+  --max_samples 32 \
+  --batch_size 8 \
+  --device cuda
+
+The EEGNet block used is inside:
+/nicoletye/workspace/Labram_with_finetuning_adaptors/Labram with finetuning adaptors/Overfitting_Evaluation/Results/NMT_OOD/nmt_ood_results.json
+
 # commit and pushed to github
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol
+
+# added LORA but still ongoing
+/nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/StudyCase/Finetuning/finetuning_strategies.py 
