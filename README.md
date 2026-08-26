@@ -4,36 +4,36 @@ What I changed to this repo this past week:
 Rename /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Loader to /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/DataLoader
 
 Updated the Benchmark connector references from Loader to DataLoader in:
-EEG-FM/Labram/run_class_finetuning.py
-EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change.py
-EEG-FM/Biot/run_binary_supervised.py
-EEG-FM/CBraMod/finetune_main.py
-EEG-FM/CSBrain/finetune_main.py
-EEG-FM/Codebrain/Downstream/finetune_main.py
-Benchmark/Preprocessing/build_canonical_h5_max_coverage_split.py
+EEG-FM/Labram/run_class_finetuning.py;
+EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change.py;
+EEG-FM/Biot/run_binary_supervised.py;
+EEG-FM/CBraMod/finetune_main.py;
+EEG-FM/CSBrain/finetune_main.py;
+EEG-FM/Codebrain/Downstream/finetune_main.py;
+Benchmark/Preprocessing/build_canonical_h5_max_coverage_split.py;
 Benchmark/DataLoader/README.md
 
 # fix log.txt inconsistency issue
 Added missing 'train_balanced_accuracy' metric to CBraMod, CSBrain, CodeBrain and BIOT.
 
 scripts modified:
-debug-unified-logging-output/EEG-FM/CBraMod/finetune_trainer.py
-debug-unified-logging-output/EEG-FM/Codebrain/Downstream/finetune_trainer.py
-debug-unified-logging-output/EEG-FM/CSBrain/finetune_trainer.py
+debug-unified-logging-output/EEG-FM/CBraMod/finetune_trainer.py;
+debug-unified-logging-output/EEG-FM/Codebrain/Downstream/finetune_trainer.py;
+debug-unified-logging-output/EEG-FM/CSBrain/finetune_trainer.py;
 
 train_min_le and train_loss_scale are LaBraM and EEGPT specific metrics so the other EEG-FM will have log schema fields:
-"train_min_lr": null
+"train_min_lr": null;
 "train_loss_scale": null
 
 # fix repeated-epoch logging issue
 At each run start, log.txt is reset once, then each epoch appends one fresh JSON line, preventing duplicated epoch logs across reruns.
 
 Files changed:
-debug-unified-logging-output/EEG-FM/Labram/run_class_finetuning.py
-debug-unified-logging-output/EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change.py
-debug-unified-logging-output/EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change_tuev.py
-debug-unified-logging-output/EEG-FM/Biot/run_binary_supervised.py
-debug-unified-logging-output/EEG-FM/Biot/run_multiclass_supervised.py
+debug-unified-logging-output/EEG-FM/Labram/run_class_finetuning.py;
+debug-unified-logging-output/EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change.py;
+debug-unified-logging-output/EEG-FM/EEGPT/downstream_tueg/run_class_finetuning_EEGPT_change_tuev.py;
+debug-unified-logging-output/EEG-FM/Biot/run_binary_supervised.py;
+debug-unified-logging-output/EEG-FM/Biot/run_multiclass_supervised.py;
 
 # checked
 From /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/debug-unified-logging-output, scaler in checkpoint keys is LaBraM/EEGPT training-engine-specific. 
@@ -96,14 +96,14 @@ Others:    debug_output/<Model>/log.txt
 
 Conflict 2: EEG-FM/Biot/run_binary_supervised.py imports resolved
 Final import set keeps all imports from EEG-FM/Biot/run_binary_supervised.py
-import json
-import sys
+import json;
+import sys;
 from pathlib import Path
 
 The merge preserved:
--Benchmark/H5 loader connector logic from the main EEG-FM
--Unified output/logging/checkpoint behavior from debug-unified-logging-output
--Consistent log.txt schema
+Benchmark/H5 loader connector logic from the main EEG-FM;
+Unified output/logging/checkpoint behavior from debug-unified-logging-output;
+Consistent log.txt schema
 
 Note:
 schema = same metric columns inside log.txt
@@ -118,11 +118,11 @@ layout = same folder/file path pattern on disk
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Inference
 
 this folder has 6 inference scripts:
-Benchmark/Inference/run_inference_labram.py
-Benchmark/Inference/run_inference_eegpt.py
-Benchmark/Inference/run_inference_biot.py
-Benchmark/Inference/run_inference_cbramod.py
-Benchmark/Inference/run_inference_csbrain.py
+Benchmark/Inference/run_inference_labram.py;
+Benchmark/Inference/run_inference_eegpt.py;
+Benchmark/Inference/run_inference_biot.py;
+Benchmark/Inference/run_inference_cbramod.py;
+Benchmark/Inference/run_inference_csbrain.py;
 Benchmark/Inference/run_inference_codebrain.py
 
 scripts include Full finetuning, LORA, EEGNet, will later include ATCNet and ShallowFBCSPNet.
@@ -134,17 +134,17 @@ this script makes plots.
 Reads saved nmt_ood_results.json files from Benchmark/Inference.
 
 output:
-nmt_ood_accuracy.png/pdf
-nmt_ood_balanced_accuracy.png/pdf
-nmt_ood_roc_auc.png/pdf
-nmt_ood_pr_auc.png/pdf
-clean_vs_nmt_ood_accuracy.png/pdf
-clean_vs_nmt_ood_balanced_accuracy.png/pdf
-clean_vs_nmt_ood_roc_auc.png/pdf
-clean_vs_nmt_ood_pr_auc.png/pdf
-nmt_ood_relative_robustness.png/pdf
-nmt_ood_accuracy_drop.png/pdf
-nmt_ood_plot_records.csv
+nmt_ood_accuracy.png/pdf;
+nmt_ood_balanced_accuracy.png/pdf;
+nmt_ood_roc_auc.png/pdf;
+nmt_ood_pr_auc.png/pdf;
+clean_vs_nmt_ood_accuracy.png/pdf;
+clean_vs_nmt_ood_balanced_accuracy.png/pdf;
+clean_vs_nmt_ood_roc_auc.png/pdf;
+clean_vs_nmt_ood_pr_auc.png/pdf;
+nmt_ood_relative_robustness.png/pdf;
+nmt_ood_accuracy_drop.png/pdf;
+nmt_ood_plot_records.csv;
 nmt_ood_plot_records.json
 
 plot command:
@@ -169,8 +169,8 @@ All six inference run succeeded.
 output results are saved under /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/nmt_ood_inference_smoke
 
 Each model folder now has:
-log.txt
-metrics.json
+log.txt;
+metrics.json;
 nmt_ood_results.json
 
 Each log.txt has 2 JSON lines:
@@ -208,11 +208,23 @@ PYTHONUNBUFFERED=1 \
   --batch_size 8 \
   --device cuda
 
-The EEGNet block used is inside:
-/nicoletye/workspace/Labram_with_finetuning_adaptors/Labram with finetuning adaptors/Overfitting_Evaluation/Results/NMT_OOD/nmt_ood_results.json
+Reuse EEGNet saved metrics from existing 
+/nicoletye/workspace/Labram_with_finetuning_adaptors/Labram with finetuning adaptors/Overfitting_Evaluation/Results/NMT_OOD/nmt_ood_results.json as the baseline results, then compare the EEG-FM inference results.
 
 # commit and pushed to github
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol
 
-# added LORA but still ongoing
+# added LORA folder
 /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/StudyCase/Finetuning/finetuning_strategies.py 
+
+removed /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/choose_StudyCase/Finetuning.py
+
+Added six model-specific LoRA helpers in finetuning_strategies.py: lora_labram, lora_eegpt, lora_biot, lora_cbramod, lora_csbrain, lora_codebrain.
+
+Kept LoRA architecture-safe: no original EEG-FM model architecture rewrite, only parameter-efficient wrapping/parametrization.
+
+Kept LoRA defaults centralized: rank 2, alpha 8.0, layers all, init scale 0.01.
+
+# will add lora to inference later
+To evaluate LoRA for all six EEG-FMs later, the inference scripts will import apply_lora_strategy(...), apply it before loading LoRA checkpoint weights, then run inference. Should be no issue here.
+
