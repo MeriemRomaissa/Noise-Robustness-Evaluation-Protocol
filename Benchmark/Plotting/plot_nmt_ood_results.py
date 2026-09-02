@@ -69,12 +69,13 @@ def records_from_result(path: Path) -> list[dict[str, Any]]:
     data = load_json(path)
     records: list[dict[str, Any]] = []
 
-    if "ft" in data or "lora" in data or "full_ft" in data or "eegnet" in data:
+    if any(key in data for key in ("ft", "full_ft", "freeze_backbone", "lora", "eegnet")):
         primary_model = infer_model_name(path, data)
         labels = {
             "ft": "LaBraM Full FT",
-            "lora": "LaBraM LoRA",
             "full_ft": f"{primary_model} Full FT",
+            "freeze_backbone": f"{primary_model} Freeze Backbone",
+            "lora": f"{primary_model} LoRA",
             "eegnet": "EEGNet",
         }
         for key, label in labels.items():
