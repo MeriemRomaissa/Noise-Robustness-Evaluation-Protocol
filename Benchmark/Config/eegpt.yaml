@@ -28,6 +28,9 @@ training:
   epochs: 15
   learning_rate: 0.0005
 
+fine_tuning:
+  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+
 evaluation:
   selection_metric: roc_auc
   classification_threshold: 0.5

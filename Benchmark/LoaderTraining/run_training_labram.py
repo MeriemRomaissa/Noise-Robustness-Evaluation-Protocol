@@ -26,7 +26,7 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
         sys.executable,
         str(LABRAM_SCRIPT),
         "--config",
-        str(args.config),
+        str(Path(args.config).expanduser().resolve()),
     ]
 
     # These optional values intentionally override YAML defaults.
@@ -41,13 +41,18 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     append_if_set(cmd, "--test_samples", args.test_samples)
     append_if_set(cmd, "--finetune", args.checkpoint)
     append_if_set(cmd, "--output_dir", args.output_dir)
-    append_if_set(cmd, "--log_dir", args.log_dir)
+    #newly added codes
+    # An empty CLI value overrides the YAML TensorBoard default so Benchmark
+    # runs keep only the shared output contract unless explicitly requested.
+    append_if_set(cmd, "--log_dir", args.log_dir if args.log_dir is not None else "")
     append_if_set(cmd, "--batch_size", args.batch_size)
     append_if_set(cmd, "--num_workers", args.num_workers)
     append_if_set(cmd, "--epochs", args.epochs)
     append_if_set(cmd, "--seed", args.seed)
     append_if_set(cmd, "--lr", args.lr)
     append_if_set(cmd, "--device", args.device)
+    append_if_set(cmd, "--warmup_epochs", args.warmup_epochs)
+    append_if_set(cmd, "--warmup_steps", args.warmup_steps)
     append_if_set(cmd, "--finetune_strategy", args.finetune_strategy)
     append_if_set(cmd, "--classification_threshold", args.classification_threshold)
     append_if_set(cmd, "--report_metrics", args.report_metrics)
@@ -56,6 +61,8 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     append_if_set(cmd, "--lora_layers", args.lora_layers)
     append_if_set(cmd, "--lora_target", args.lora_target)
 
+    if args.abs_pos_emb:
+        cmd.append("--abs_pos_emb")
     if args.no_auto_resume:
         cmd.append("--no_auto_resume")
     if args.no_pin_mem:
@@ -94,17 +101,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", default=None, type=int)
     parser.add_argument("--lr", default=None, type=float)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--warmup_epochs", default=None, type=int)
+    parser.add_argument("--warmup_steps", default=None, type=int)
+    parser.add_argument("--abs_pos_emb", action="store_true")
     parser.add_argument(
         "--finetune_strategy",
         default=None,
-        choices=["original", "freeze_backbone", "freeze_backbone_regularized", "freeze_early_layers", "aggressive_reg", "lora"],
+        #newly added codes
+        choices=["original", "full_finetune", "freeze_backbone", "lora"],
     )
     parser.add_argument("--classification_threshold", default=None, type=float)
     parser.add_argument("--report_metrics", default=None, help="Comma-separated metric names.")
     parser.add_argument("--lora_rank", default=None, type=int)
     parser.add_argument("--lora_alpha", default=None, type=float)
     parser.add_argument("--lora_layers", default=None)
-    parser.add_argument("--lora_target", default=None, choices=["attention_only", "mlp_only", "attention_and_mlp"])
+    parser.add_argument("--lora_target", default=None, choices=["lora_module"])
     parser.add_argument("--no_auto_resume", action="store_true")
     parser.add_argument("--no_pin_mem", action="store_true")
     parser.add_argument(

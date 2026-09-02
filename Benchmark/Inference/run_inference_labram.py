@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """LaBraM NMT OOD evaluation.
 
-Runs the NMT OOD comparison used by the LaBraM protocol scripts. When a LoRA
-checkpoint is supplied, compare full fine-tuning vs LoRA vs precomputed EEGNet;
-otherwise compare full fine-tuning vs EEGNet.
+Runs the NMT OOD comparison used by the LaBraM protocol scripts. Optional
+freeze-backbone and LoRA checkpoints are compared with full fine-tuning and
+precomputed EEGNet baseline metrics when supplied.
 """
 
 from __future__ import annotations
@@ -24,14 +24,20 @@ from torch.utils.data import DataLoader, Dataset
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LABRAM_ROOT = REPO_ROOT / "EEG-FM" / "Labram"
 DEFAULT_CONFIG = REPO_ROOT / "Benchmark" / "Config" / "labram.yaml"
+FINETUNING_STRATEGY_ROOT = REPO_ROOT / "Benchmark" / "FinetuningStrategy"
 
+sys.path.insert(0, str(FINETUNING_STRATEGY_ROOT))
 sys.path.insert(0, str(LABRAM_ROOT))
 
-from Protocol_Evaluation.finetune_strategies import strategy_lora
+from _lora_common import DEFAULT_LORA_SETTINGS, strategy_freeze_backbone
+from lora_labram import apply_lora_strategy as apply_model_lora_strategy
 from run_class_finetuning import get_models
 from utils import get_input_chans
 
 
+MODEL_NAME = "LaBraM"
+MODEL_LABEL = "LaBraM"
+METRIC_KEYS = ("test_accuracy", "test_balanced_accuracy", "test_roc_auc", "test_pr_auc")
 TUAB_CH = [
     "FP1", "FP2", "F3", "F4", "C3", "C4", "P3", "P4", "O1", "O2",
     "F7", "F8", "T3", "T4", "T5", "T6", "A1", "A2", "FZ", "CZ", "PZ", "T1", "T2",
@@ -118,10 +124,29 @@ def load_checkpoint(model, checkpoint_path: str):
     return model
 
 
-def load_lora_checkpoint(checkpoint_path: str, lora_rank: int, lora_alpha: float):
-    lora_args = SimpleNamespace(lora_rank=lora_rank, lora_alpha=lora_alpha)
+def apply_checkpoint_strategy(model, strategy: str, output_dir: Path):
+    if strategy in {"full_ft", "full_finetune", "original"}:
+        return None
+    if strategy == "freeze_backbone":
+        args = SimpleNamespace(model_name=MODEL_NAME, model=MODEL_NAME, allow_head_guess=True)
+        return strategy_freeze_backbone(model, args, model_name=MODEL_NAME)
+    if strategy == "lora":
+        return apply_model_lora_strategy(
+            model,
+            lora_settings=DEFAULT_LORA_SETTINGS,
+            output_dir=output_dir,
+            allow_head_guess=True,
+        )
+    raise ValueError(f"Unknown inference checkpoint strategy: {strategy}")
+
+
+def load_strategy_checkpoint(checkpoint_path: str, strategy: str, output_dir: Path):
     model = build_model()
-    strategy_lora(model, lora_args)
+    apply_checkpoint_strategy(
+        model,
+        strategy,
+        output_dir=output_dir / strategy,
+    )
     return load_checkpoint(model, checkpoint_path)
 
 
@@ -218,6 +243,11 @@ def write_nmt_outputs(output_dir: Path, results: dict):
             benchmark_log_record("LaBraM LoRA", results["lora"]["nmt_ood"],
                                  results["lora"]["checkpoint"], "NMT_OOD")
         )
+    if "freeze_backbone" in results:
+        records.append(
+            benchmark_log_record("LaBraM Freeze Backbone", results["freeze_backbone"]["nmt_ood"],
+                                 results["freeze_backbone"]["checkpoint"], "NMT_OOD")
+        )
     records.append(
         benchmark_log_record("EEGNet", results["eegnet"]["nmt_ood"],
                              results["eegnet"]["source_json"], "NMT_OOD")
@@ -235,12 +265,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run LaBraM NMT OOD inference.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--ckpt_ft", default=str(NMT_CKPT_BASE / "checkpoint-best-original-42-TUAB.pth"))
+    parser.add_argument("--ckpt_freeze_backbone", default=None,
+                        help="Optional freeze-backbone checkpoint.")
     parser.add_argument("--ckpt_lora", default=None,
                         help="Optional LoRA checkpoint. If omitted, compare Full FT vs EEGNet only.")
     parser.add_argument("--eegnet_json", type=Path, default=NMT_BASE / "nmt_eegnet_results.json",
                         help="Precomputed EEGNet NMT metrics JSON.")
-    parser.add_argument("--lora_rank", type=int, default=2)
-    parser.add_argument("--lora_alpha", type=float, default=8.0)
     parser.add_argument("--nmt_dir", type=Path, default=NMT_BASE / "test")
     parser.add_argument("--output_dir", default=None)
     parser.add_argument("--batch_size", type=int, default=None)
@@ -262,6 +292,7 @@ def main():
     if args.dry_run:
         print(f"config={args.config}")
         print(f"ckpt_ft={args.ckpt_ft}")
+        print(f"ckpt_freeze_backbone={args.ckpt_freeze_backbone}")
         print(f"ckpt_lora={args.ckpt_lora}")
         print(f"eegnet_json={args.eegnet_json}")
         print(f"nmt_dir={args.nmt_dir}")
@@ -297,14 +328,12 @@ def main():
         },
     }
     if args.ckpt_lora:
-        model_lora = load_lora_checkpoint(args.ckpt_lora, args.lora_rank, args.lora_alpha)
+        model_lora = load_strategy_checkpoint(args.ckpt_lora, "lora", output_dir)
         lora_metrics = run_nmt_inference(model_lora, dataset, device, batch_size, float(threshold))
         results["lora"] = {
             "tuab_clean": CLEAN_TUAB["lora"],
             "nmt_ood": lora_metrics,
             "checkpoint": args.ckpt_lora,
-            "lora_rank": args.lora_rank,
-            "lora_alpha": args.lora_alpha,
         }
         results["comparison"].update({
             "lora_minus_ft_test_accuracy": metric_delta(lora_metrics, ft_metrics, "test_accuracy"),
@@ -318,6 +347,15 @@ def main():
             "lora_minus_eegnet_test_roc_auc": metric_delta(lora_metrics, eegnet_metrics, "test_roc_auc"),
             "lora_minus_eegnet_test_pr_auc": metric_delta(lora_metrics, eegnet_metrics, "test_pr_auc"),
         })
+    if args.ckpt_freeze_backbone:
+        model_freeze = load_strategy_checkpoint(args.ckpt_freeze_backbone, "freeze_backbone", output_dir)
+        freeze_metrics = run_nmt_inference(model_freeze, dataset, device, batch_size, float(threshold))
+        results["freeze_backbone"] = {
+            "nmt_ood": freeze_metrics,
+            "checkpoint": args.ckpt_freeze_backbone,
+        }
+        add_metric_deltas(results["comparison"], "freeze_backbone", freeze_metrics, "ft", ft_metrics)
+        add_metric_deltas(results["comparison"], "freeze_backbone", freeze_metrics, "eegnet", eegnet_metrics)
     write_nmt_outputs(output_dir, results)
     print(f"Wrote {output_dir / 'nmt_ood_results.json'}")
     print(f"Wrote {output_dir / 'log.txt'}")
@@ -327,6 +365,11 @@ def metric_delta(left: dict, right: dict, key: str):
     if left.get(key) is None or right.get(key) is None:
         return None
     return float(left[key] - right[key])
+
+
+def add_metric_deltas(comparison: dict, left_name: str, left_metrics: dict, right_name: str, right_metrics: dict) -> None:
+    for key in METRIC_KEYS:
+        comparison[f"{left_name}_minus_{right_name}_{key}"] = metric_delta(left_metrics, right_metrics, key)
 
 
 if __name__ == "__main__":

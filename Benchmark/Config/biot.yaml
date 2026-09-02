@@ -27,6 +27,9 @@ training:
   epochs: 15
   learning_rate: 0.001
 
+fine_tuning:
+  strategy: full_finetune  # choices: [full_finetune, freeze_backbone, lora]
+
 fixed_recipe:
   model:
     dataset: TUAB

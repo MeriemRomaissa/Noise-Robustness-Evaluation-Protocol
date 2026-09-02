@@ -7,9 +7,39 @@ import numpy as np
 import copy
 import os
 import json
+import sys
+from pathlib import Path
 from sklearn.metrics import balanced_accuracy_score
 
 import torch
+
+
+#newly added codes
+def _add_benchmark_finetuning_path_to_syspath():
+    """Let CodeBrain reuse Benchmark LoRA helpers without changing model code."""
+    for parent in Path(__file__).resolve().parents:
+        path = parent / "Benchmark" / "FinetuningStrategy"
+        if path.exists():
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
+            return
+    raise RuntimeError("Could not find Benchmark/FinetuningStrategy")
+
+
+#newly added codes
+def _apply_benchmark_finetune_strategy(model, params):
+    """Apply optional Benchmark LoRA/freeze policy before optimizer creation."""
+    strategy = getattr(params, "finetune_strategy", "original")
+    if strategy in {"original", "full_finetune", "", None}:
+        return None
+    _add_benchmark_finetuning_path_to_syspath()
+    import lora_codebrain
+
+    params.model_name = "CodeBrain"
+    params.allow_head_guess = True
+    summary = lora_codebrain.apply_strategy(model, params)
+    print(f"[Benchmark] finetune_strategy={strategy} summary={summary}", flush=True)
+    return summary
 
 
 class TensorboardLogger(object):
@@ -55,6 +85,14 @@ class Trainer(object):
         else:
             self.log_writer = None
         self.output_dir = getattr(params, 'output_dir', '')
+        #newly added codes
+        benchmark_strategy = getattr(self.params, "finetune_strategy", "original")
+        #newly added codes
+        benchmark_strategy_active = benchmark_strategy not in {"original", "full_finetune", "", None}
+        #newly added codes
+        if benchmark_strategy_active:
+            _apply_benchmark_finetune_strategy(self.model, self.params)
+            self.n_parameters = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
         backbone_params = []
         other_params = []
@@ -63,7 +101,9 @@ class Trainer(object):
 
                 backbone_params.append(param)
 
-                if params.frozen:
+                if benchmark_strategy_active:
+                    pass
+                elif params.frozen:
                     param.requires_grad = False
                 else:
                     param.requires_grad = True
@@ -71,10 +111,36 @@ class Trainer(object):
                 other_params.append(param)
 
         if self.params.optimizer == 'AdamW':
-            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.params.lr,
-                                               weight_decay=self.params.weight_decay)
+            #newly added codes
+            if benchmark_strategy_active:
+                #newly added codes
+                trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+                #newly added codes
+                if not trainable_params:
+                    raise RuntimeError("No trainable parameters found for CodeBrain optimizer.")
+                self.optimizer = torch.optim.AdamW(
+                    trainable_params,
+                    lr=self.params.lr,
+                    weight_decay=self.params.weight_decay,
+                )
+            else:
+                self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.params.lr,
+                                                   weight_decay=self.params.weight_decay)
         else:
-            if self.params.multi_lr:
+            #newly added codes
+            if benchmark_strategy_active:
+                #newly added codes
+                trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+                #newly added codes
+                if not trainable_params:
+                    raise RuntimeError("No trainable parameters found for CodeBrain optimizer.")
+                self.optimizer = torch.optim.SGD(
+                    trainable_params,
+                    lr=self.params.lr,
+                    momentum=0.9,
+                    weight_decay=self.params.weight_decay,
+                )
+            elif self.params.multi_lr:
                 self.optimizer = torch.optim.SGD([
                     {'params': backbone_params, 'lr': self.params.lr},
                     {'params': other_params, 'lr': self.params.lr * 5}
@@ -331,7 +397,8 @@ class Trainer(object):
                     with open(os.path.join(self.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
                         f.write(json.dumps(log_stats) + "\n")
                 self._save_checkpoint(epoch)
-                if roc_auc > roc_auc_best:
+                #newly added codes
+                if self.best_model_states is None or roc_auc > roc_auc_best:
                     print("auroc increasing....saving weights !! ")
                     print("Val Evaluation: acc: {:.5f}, pr_auc: {:.5f}, roc_auc: {:.5f}".format(
                         acc,

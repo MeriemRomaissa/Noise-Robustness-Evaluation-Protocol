@@ -1,4 +1,5 @@
 import argparse
+import os
 import random
 
 #newly added codes
@@ -78,6 +79,8 @@ def _config_defaults(config):
     study_case = config.get("study_case", {})
     loader = config.get("loader", {})
     training = config.get("training", {})
+    #newly added codes
+    fine_tuning = config.get("fine_tuning", {})
 
     if paths.get("original_data"):
         defaults["datasets_dir"] = paths["original_data"]
@@ -129,6 +132,20 @@ def _config_defaults(config):
         defaults["seed"] = _first_seed(training["seed"])
     elif "seeds" in training:
         defaults["seed"] = _first_seed(training["seeds"])
+    #newly added codes
+    if fine_tuning.get("strategy"):
+        defaults["finetune_strategy"] = fine_tuning["strategy"]
+    #newly added codes
+    lora = fine_tuning.get("lora", {})
+    #newly added codes
+    if "rank" in lora:
+        defaults["lora_rank"] = int(lora["rank"])
+    #newly added codes
+    if "alpha" in lora:
+        defaults["lora_alpha"] = float(lora["alpha"])
+    #newly added codes
+    if "layers" in lora:
+        defaults["lora_layers"] = lora["layers"]
 
     return defaults
 
@@ -340,6 +357,19 @@ def main():
     #newly added codes
     parser.add_argument('--pin_memory', type=_str_to_bool, default=True,
                         help='Pin DataLoader memory.')
+    #newly added codes
+    parser.add_argument('--finetune_strategy', type=str, default='original',
+                        choices=['original', 'full_finetune', 'freeze_backbone', 'lora'],
+                        help='Benchmark fine-tuning strategy.')
+    #newly added codes
+    parser.add_argument('--lora_rank', type=int, default=2,
+                        help='LoRA rank used when --finetune_strategy lora.')
+    #newly added codes
+    parser.add_argument('--lora_alpha', type=float, default=8.0,
+                        help='LoRA alpha used when --finetune_strategy lora.')
+    #newly added codes
+    parser.add_argument('--lora_layers', type=str, default='all',
+                        help='LoRA layer selection; current Benchmark policy supports all.')
 
     #newly added codes
     parser.set_defaults(**config_defaults)

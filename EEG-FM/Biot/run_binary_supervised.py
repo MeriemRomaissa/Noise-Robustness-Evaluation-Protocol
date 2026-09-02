@@ -86,6 +86,8 @@ def _config_defaults(config):
     fixed_model = fixed_recipe.get("model", {})
     fixed_training = fixed_recipe.get("training", {})
     fixed_data = fixed_recipe.get("data", {})
+    #newly added codes
+    fine_tuning = config.get("fine_tuning", {})
 
     if paths.get("original_data"):
         defaults["data_path"] = paths["original_data"]
@@ -137,8 +139,50 @@ def _config_defaults(config):
             defaults[key] = fixed_model[key]
     if "normalization_epsilon" in fixed_data:
         defaults["normalization_epsilon"] = float(fixed_data["normalization_epsilon"])
+    #newly added codes
+    if fine_tuning.get("strategy"):
+        defaults["finetune_strategy"] = fine_tuning["strategy"]
+    #newly added codes
+    lora = fine_tuning.get("lora", {})
+    #newly added codes
+    if "rank" in lora:
+        defaults["lora_rank"] = int(lora["rank"])
+    #newly added codes
+    if "alpha" in lora:
+        defaults["lora_alpha"] = float(lora["alpha"])
+    #newly added codes
+    if "layers" in lora:
+        defaults["lora_layers"] = lora["layers"]
 
     return defaults
+
+
+#newly added codes
+def _add_benchmark_finetuning_path_to_syspath():
+    """Let BIOT reuse Benchmark LoRA helpers without changing model code."""
+    for parent in Path(__file__).resolve().parents:
+        path = parent / "Benchmark" / "FinetuningStrategy"
+        if path.exists():
+            if str(path) not in sys.path:
+                sys.path.insert(0, str(path))
+            return
+    raise RuntimeError("Could not find Benchmark/FinetuningStrategy")
+
+
+#newly added codes
+def _apply_benchmark_finetune_strategy(model, args):
+    """Apply optional Benchmark LoRA/freeze policy before Lightning builds its optimizer."""
+    strategy = getattr(args, "finetune_strategy", "original")
+    if strategy in {"original", "full_finetune", "", None}:
+        return None
+    _add_benchmark_finetuning_path_to_syspath()
+    import lora_biot
+
+    args.model_name = "BIOT"
+    args.allow_head_guess = True
+    summary = lora_biot.apply_strategy(model, args)
+    print(f"[Benchmark] finetune_strategy={strategy} summary={summary}", flush=True)
+    return summary
 
 
 #newly added codes
@@ -216,11 +260,15 @@ class LitModel_finetune(pl.LightningModule):
         self._train_losses = []
         self._latest_train_metrics = {}
         self.test_loader_for_epoch_logging = None
+        #newly added codes
+        self._best_val_roc_auc = None
 
     def on_train_epoch_start(self):
         self._train_probs = []
         self._train_targets = []
         self._train_losses = []
+        #newly added codes
+        self._latest_train_metrics = {}
 
     def training_step(self, batch, batch_idx):
         X, y = batch
@@ -233,7 +281,8 @@ class LitModel_finetune(pl.LightningModule):
         self.log("train_loss", loss)
         return loss
 
-    def training_epoch_end(self, training_step_outputs):
+    #newly added codes
+    def _update_train_metrics(self):
         if not self._train_probs:
             return
         result = torch.cat([x.reshape(-1) for x in self._train_probs]).numpy()
@@ -244,6 +293,13 @@ class LitModel_finetune(pl.LightningModule):
             "accuracy": metrics["accuracy"],
             "balanced_accuracy": metrics["balanced_accuracy"],
         }
+
+    def training_epoch_end(self, training_step_outputs):
+        #newly added codes
+        self._update_train_metrics()
+        if not self._latest_train_metrics:
+            return
+        metrics = self._latest_train_metrics
         self.log("train_acc", metrics["accuracy"], sync_dist=True)
         self.log("train_bacc", metrics["balanced_accuracy"], sync_dist=True)
 
@@ -316,6 +372,41 @@ class LitModel_finetune(pl.LightningModule):
         with open(os.path.join(self.args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
             f.write(json.dumps(log_stats) + "\n")
 
+    #newly added codes
+    def _write_standard_checkpoints(self, val_metrics):
+        """Write the shared latest/best checkpoint layout for every strategy."""
+        if not self.args.output_dir:
+            return
+        if getattr(self.trainer, "sanity_checking", False):
+            return
+        if not getattr(self.trainer, "is_global_zero", True):
+            return
+
+        os.makedirs(self.args.output_dir, exist_ok=True)
+        optimizers = getattr(self.trainer, "optimizers", [])
+        optimizer_state = optimizers[0].state_dict() if optimizers else {}
+        checkpoint = {
+            "model": self.model.state_dict(),
+            "optimizer": optimizer_state,
+            "epoch": int(self.current_epoch),
+            "args": self.args,
+        }
+        torch.save(checkpoint, os.path.join(self.args.output_dir, "checkpoint.pth"))
+
+        val_roc_auc = val_metrics.get("roc_auc")
+        is_finite = val_roc_auc is not None and np.isfinite(val_roc_auc)
+        is_best = self._best_val_roc_auc is None
+        if is_finite and (
+            self._best_val_roc_auc is None or val_roc_auc > self._best_val_roc_auc
+        ):
+            self._best_val_roc_auc = float(val_roc_auc)
+            is_best = True
+        if is_best:
+            torch.save(
+                checkpoint,
+                os.path.join(self.args.output_dir, "checkpoint-best.pth"),
+            )
+
     def validation_step(self, batch, batch_idx):
         X, y = batch
         with torch.no_grad():
@@ -361,7 +452,11 @@ class LitModel_finetune(pl.LightningModule):
         test_result = {}
         if self.test_loader_for_epoch_logging is not None:
             test_result = self._evaluate_loader_for_binaryclass(self.test_loader_for_epoch_logging)
+        #newly added codes
+        self._update_train_metrics()
         self._write_epoch_log(result, test_result)
+        #newly added codes
+        self._write_standard_checkpoints(result)
 
     def test_step(self, batch, batch_idx):
         X, y = batch
@@ -406,8 +501,13 @@ class LitModel_finetune(pl.LightningModule):
         return result
 
     def configure_optimizers(self):
+        #newly added codes
+        optimizer_params = [p for p in self.model.parameters() if p.requires_grad]
+        #newly added codes
+        if not optimizer_params:
+            raise RuntimeError("No trainable parameters found for BIOT optimizer.")
         optimizer = torch.optim.Adam(
-            self.model.parameters(),
+            optimizer_params,
             lr=self.args.lr,
             weight_decay=self.args.weight_decay,
         )
@@ -651,13 +751,16 @@ def supervised(args):
 
     else:
         raise NotImplementedError
+    #newly added codes
+    _apply_benchmark_finetune_strategy(model, args)
     lightning_model = LitModel_finetune(args, model)
     lightning_model.test_loader_for_epoch_logging = test_loader
 
     # logger and callbacks
     version = f"{args.dataset}-{args.model}-{args.lr}-{args.batch_size}-{args.sampling_rate}-{args.token_size}-{args.hop_length}"
-    logger = TensorBoardLogger(
-        #newly added codes
+    #newly added codes
+    # Benchmark runs already write the shared log/checkpoint contract directly.
+    logger = False if args.benchmark_output else TensorBoardLogger(
         save_dir=args.output_dir,
         version=version,
         name="log",
@@ -673,7 +776,8 @@ def supervised(args):
         strategy=DDPStrategy(find_unused_parameters=False),
         auto_select_gpus=True,
         benchmark=True,
-        enable_checkpointing=True,
+        #newly added codes
+        enable_checkpointing=not args.benchmark_output,
         logger=logger,
         max_epochs=args.epochs,
         callbacks=[early_stop_callback],
@@ -685,8 +789,18 @@ def supervised(args):
     )
 
     # test the model
+    #newly added codes
+    # In Benchmark mode, restore the shared best checkpoint because Lightning's
+    # duplicate ModelCheckpoint output is intentionally disabled.
+    test_ckpt_path = "best"
+    if args.benchmark_output:
+        best_path = os.path.join(args.output_dir, "checkpoint-best.pth")
+        if os.path.isfile(best_path):
+            best_checkpoint = torch.load(best_path, map_location="cpu")
+            lightning_model.model.load_state_dict(best_checkpoint["model"])
+        test_ckpt_path = None
     pretrain_result = trainer.test(
-        model=lightning_model, ckpt_path="best", dataloaders=test_loader
+        model=lightning_model, ckpt_path=test_ckpt_path, dataloaders=test_loader
     )[0]
     print(pretrain_result)
 
@@ -760,6 +874,9 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default=".",
                         help="Benchmark output/log root.")
     #newly added codes
+    parser.add_argument("--benchmark_output", action="store_true",
+                        help="Write only the shared Benchmark log/checkpoint layout.")
+    #newly added codes
     parser.add_argument("--device", type=str, default="cuda",
                         help="cuda or cpu")
     parser.add_argument("--dataset", type=str, default="TUAB", help="dataset")
@@ -787,6 +904,19 @@ if __name__ == "__main__":
         "--pretrain_model_path", type=str, default="", help="pretrained model path"
     )
     #newly added codes
+    parser.add_argument("--finetune_strategy", type=str, default="original",
+                        choices=["original", "full_finetune", "freeze_backbone", "lora"],
+                        help="Benchmark fine-tuning strategy.")
+    #newly added codes
+    parser.add_argument("--lora_rank", type=int, default=2,
+                        help="LoRA rank used when --finetune_strategy lora.")
+    #newly added codes
+    parser.add_argument("--lora_alpha", type=float, default=8.0,
+                        help="LoRA alpha used when --finetune_strategy lora.")
+    #newly added codes
+    parser.add_argument("--lora_layers", type=str, default="all",
+                        help="LoRA layer selection; current Benchmark policy supports all.")
+    #newly added codes
     known_args, _ = parser.parse_known_args()
     #newly added codes
     if known_args.config:
@@ -796,5 +926,10 @@ if __name__ == "__main__":
     if args.output_dir:
         os.makedirs(args.output_dir, exist_ok=True)
         open(os.path.join(args.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
+        #newly added codes
+        for checkpoint_name in ("checkpoint.pth", "checkpoint-best.pth"):
+            checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+            if os.path.isfile(checkpoint_path):
+                os.remove(checkpoint_path)
 
     supervised(args)

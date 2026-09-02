@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""LoRA helpers for Benchmark EEG-FM study cases.
-
-This is helper code, not a connector or runner. Training and inference scripts
-build an EEG-FM model first, then call this file only when LoRA is requested.
-Full fine-tuning stays in the original EEG-FM training scripts.
-"""
+"""Shared LoRA machinery for Benchmark EEG-FM study cases."""
 
 from __future__ import annotations
 
@@ -38,7 +33,7 @@ def _init_lora_a_(param: torch.Tensor, init_scale: float | None = None) -> None:
 
 
 class LoRALinear(nn.Module):
-    """Adapter-side LoRA wrapper for nn.Linear without editing model repos."""
+    """LoRA wrapper for nn.Linear without editing model repos."""
 
     def __init__(self, base: nn.Linear, rank: int = 2, alpha: float = 8.0, init_scale: float | None = None):
         super().__init__()
@@ -85,6 +80,32 @@ class LoRAWeightParametrization(nn.Module):
 
 class LoRAConv2dParametrization(LoRAWeightParametrization):
     """Named subclass for Conv2d LoRA reporting."""
+
+
+class LoRAConv2d(nn.Module):
+    """Reference-style Conv2d LoRA weight helper."""
+
+    def __init__(self, in_channels: int, out_channels: int, kernel_size, rank: int = 4, alpha: float = 8.0):
+        super().__init__()
+        if rank <= 0:
+            raise ValueError(f"LoRA rank must be positive, got {rank}")
+        self.in_channels = int(in_channels)
+        self.out_channels = int(out_channels)
+        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.rank = int(rank)
+        self.alpha = float(alpha)
+        self.scaling = self.alpha / float(self.rank)
+        kernel_numel = self.in_channels * self.kernel_size[0] * self.kernel_size[1]
+        self.lora_a = nn.Parameter(torch.randn(self.rank, kernel_numel) * 0.01)
+        self.lora_b = nn.Parameter(torch.zeros(self.out_channels, self.rank))
+
+    def forward(self, original_weight: torch.Tensor) -> torch.Tensor:
+        update = (self.lora_b @ self.lora_a).view(
+            self.out_channels,
+            self.in_channels,
+            *self.kernel_size,
+        )
+        return original_weight + update * self.scaling
 
 
 def _can_require_grad(param: torch.Tensor) -> bool:
@@ -243,20 +264,22 @@ def _is_mlp_linear_name(name: str) -> bool:
     )
 
 
-def _is_strict_temporal_conv_name(model_name: str, name: str) -> bool:
+def _is_temporal_conv_name(model_name: str, name: str) -> bool:
     lowered = name.lower()
     if model_name == "LaBraM":
         return any(lowered.endswith(f"patch_embed.{conv}") for conv in ("conv1", "conv2", "conv3"))
     return "temembed" in lowered or "temporal" in lowered
 
 
-def _apply_lora_module_policy(
+def apply_lora_module_policy(
     model: nn.Module,
     model_name: str,
-    rank: int,
-    alpha: float,
-    init_scale: float,
+    rank: int = 2,
+    alpha: float = 8.0,
+    init_scale: float = 0.01,
 ) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Apply the audited LoRA target policy for one EEG-FM model."""
+
     notes: list[str] = []
     target_names: list[str] = []
     strict_summary: dict[str, Any] = {
@@ -304,7 +327,7 @@ def _apply_lora_module_policy(
                 _replace_module(model, name, LoRALinear(module, rank=rank, alpha=alpha, init_scale=init_scale))
                 target_names.append(name)
                 strict_summary["mlp_adapted"] = True
-        elif isinstance(module, nn.Conv2d) and _is_strict_temporal_conv_name(model_name, name):
+        elif isinstance(module, nn.Conv2d) and _is_temporal_conv_name(model_name, name):
             _register_lora_parametrization(module, "weight", rank=4, alpha=alpha, conv=True, init_scale=init_scale)
             target_names.append(f"{name}.weight")
             strict_summary["temporal_conv2d_adapted"] = True
@@ -325,47 +348,7 @@ def _apply_lora_module_policy(
     return target_names, notes, strict_summary
 
 
-def lora_labram(model: nn.Module, rank: int = 2, alpha: float = 8.0, init_scale: float = 0.01):
-    """LaBraM LoRA: qkv, fc1/fc2, temporal conv1/2/3; no attention output."""
-    return _apply_lora_module_policy(model, "LaBraM", rank, alpha, init_scale)
-
-
-def lora_eegpt(model: nn.Module, rank: int = 2, alpha: float = 8.0, init_scale: float = 0.01):
-    """EEGPT LoRA: qkv and MLP equivalents; reconstruction modules excluded."""
-    return _apply_lora_module_policy(model, "EEGPT", rank, alpha, init_scale)
-
-
-def lora_biot(model: nn.Module, rank: int = 2, alpha: float = 8.0, init_scale: float = 0.01):
-    """BIOT LoRA: q/k/v plus feed-forward w1/w2 equivalents."""
-    return _apply_lora_module_policy(model, "BIOT", rank, alpha, init_scale)
-
-
-def lora_cbramod(model: nn.Module, rank: int = 2, alpha: float = 8.0, init_scale: float = 0.01):
-    """CBraMod LoRA: MHA in-projection plus linear1/linear2; out_proj skipped."""
-    return _apply_lora_module_policy(model, "CBraMod", rank, alpha, init_scale)
-
-
-def lora_csbrain(model: nn.Module, rank: int = 2, alpha: float = 8.0, init_scale: float = 0.01):
-    """CSBrain LoRA: MHA in-projection, linear1/linear2, temporal conv equivalents."""
-    return _apply_lora_module_policy(model, "CSBrain", rank, alpha, init_scale)
-
-
-def lora_codebrain(model: nn.Module, rank: int = 2, alpha: float = 8.0, init_scale: float = 0.01):
-    """CodeBrain LoRA: qkv equivalent where available; MLP equivalent may be partial."""
-    return _apply_lora_module_policy(model, "CodeBrain", rank, alpha, init_scale)
-
-
-LORA_BY_MODEL = {
-    "LaBraM": lora_labram,
-    "EEGPT": lora_eegpt,
-    "BIOT": lora_biot,
-    "CBraMod": lora_cbramod,
-    "CSBrain": lora_csbrain,
-    "CodeBrain": lora_codebrain,
-}
-
-
-def _resolve_lora_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
+def resolve_lora_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     raw = settings or {}
     resolved = {**DEFAULT_LORA_SETTINGS, **raw}
     target = raw.get("target", raw.get("target_modules", raw.get("lora_target", DEFAULT_LORA_SETTINGS["target"])))
@@ -383,23 +366,106 @@ def _resolve_lora_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
     return resolved
 
 
-def _report_dir(output_dir: str | Path = "", strategy_report_path: str | Path = "") -> Path | None:
+def lora_settings_from_args(args: Any = None) -> dict[str, Any]:
+    if args is None:
+        return {}
+    return {
+        "rank": getattr(args, "lora_rank", DEFAULT_LORA_SETTINGS["rank"]),
+        "alpha": getattr(args, "lora_alpha", DEFAULT_LORA_SETTINGS["alpha"]),
+        "layers": getattr(args, "lora_layers", DEFAULT_LORA_SETTINGS["layers"]),
+        "target": getattr(args, "lora_target", getattr(args, "target_modules", DEFAULT_LORA_SETTINGS["target"])),
+        "init_scale": getattr(args, "lora_init_scale", DEFAULT_LORA_SETTINGS["init_scale"]),
+    }
+
+
+def strategy_original(model: nn.Module, args: Any = None) -> dict[str, Any]:
+    """Keep original EEG-FM full fine-tuning behavior."""
+
+    skipped = _set_all_trainable(model, True)
+    summary = {
+        "model_name": getattr(args, "model_name", getattr(args, "model", "")) if args is not None else "",
+        "strategy": "original",
+        "notes": [
+            "Full fine-tuning is handled by the original EEG-FM training script; this helper only leaves trainable parameters enabled."
+        ],
+        "skipped_non_float_param_names": skipped,
+        "skipped_non_float_param_count": len(skipped),
+    }
+    if skipped:
+        summary["notes"].append("non-floating parameters cannot require gradients and were skipped")
+    summary.update(_param_counts(model))
+    summary["trainable_param_examples"] = _trainable_param_examples(model)
+    print(
+        f"[finetuning_strategy] original: "
+        f"{summary['trainable_params']}/{summary['total_params']} trainable "
+        f"({summary['trainable_percent']:.4f}%)"
+    )
+    return summary
+
+
+def strategy_freeze_backbone(model: nn.Module, args: Any = None, model_name: str = "") -> dict[str, Any]:
+    """Freeze backbone and keep the downstream classifier/head trainable."""
+
+    model_name = model_name or getattr(args, "model_name", getattr(args, "model", "")) if args is not None else model_name
+    allow_head_guess = bool(getattr(args, "allow_head_guess", False)) if args is not None else False
+    _set_all_trainable(model, False)
+    head_names = find_head_parameter_names(model, allow_head_guess=allow_head_guess, model_name=model_name)
+    if not head_names:
+        raise RuntimeError(f"Could not identify classifier/head parameters for {model_name or 'model'}.")
+    skipped = _set_named_trainable(model, set(head_names))
+    summary = {
+        "model_name": model_name,
+        "strategy": "freeze_backbone",
+        "head_param_names": head_names,
+        "notes": [],
+        "skipped_non_float_param_names": skipped,
+        "skipped_non_float_param_count": len(skipped),
+    }
+    if skipped:
+        summary["notes"].append("non-floating parameters cannot require gradients and were skipped")
+    summary.update(_param_counts(model))
+    summary["trainable_param_examples"] = _trainable_param_examples(model)
+    print(
+        f"[finetuning_strategy] {model_name or 'model'} freeze_backbone: "
+        f"{summary['trainable_params']}/{summary['total_params']} trainable "
+        f"({summary['trainable_percent']:.4f}%)"
+    )
+    return summary
+
+
+def apply_strategy_for_model(model: nn.Module, args: Any, model_name: str, lora_apply_func) -> dict[str, Any]:
+    """Reference-style dispatcher for one model-specific LoRA file."""
+
+    strategy = getattr(args, "finetune_strategy", getattr(args, "strategy", "original")) if args is not None else "original"
+    if getattr(args, "freeze_backbone", False) if args is not None else False:
+        strategy = "freeze_backbone"
+
+    if strategy in {"original", "full_finetune", "full_ft"}:
+        return strategy_original(model, args)
+    if strategy in {"freeze_backbone", "linear_probe"}:
+        return strategy_freeze_backbone(model, args, model_name=model_name)
+    if strategy == "lora":
+        return lora_apply_func(
+            model,
+            lora_settings=lora_settings_from_args(args),
+            output_dir=getattr(args, "output_dir", ""),
+            strategy_report_path=getattr(args, "strategy_report_path", ""),
+            allow_head_guess=bool(getattr(args, "allow_head_guess", False)),
+        )
+    raise ValueError(f"Unknown finetune strategy: {strategy}")
+
+
+def write_lora_reports(summary: dict[str, Any], output_dir: str | Path = "", strategy_report_path: str | Path = "") -> None:
     if strategy_report_path:
         path = Path(strategy_report_path)
     elif output_dir:
         path = Path(output_dir) / "strategy"
     else:
-        return None
+        return
     if path.suffix:
         path = path.parent
     path.mkdir(parents=True, exist_ok=True)
-    return path
 
-
-def _write_lora_reports(summary: dict[str, Any], output_dir: str | Path = "", strategy_report_path: str | Path = "") -> None:
-    path = _report_dir(output_dir=output_dir, strategy_report_path=strategy_report_path)
-    if path is None:
-        return
     (path / "trainable_params.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     lines = [
         f"model: {summary['model_name']}",
@@ -420,6 +486,7 @@ def _write_lora_reports(summary: dict[str, Any], output_dir: str | Path = "", st
         lines.append("notes:")
         lines.extend(f"- {note}" for note in summary["notes"])
     (path / "trainable_params.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     payload = {
         "model_name": summary["model_name"],
         "lora_rank": summary.get("lora_rank"),
@@ -431,7 +498,7 @@ def _write_lora_reports(summary: dict[str, Any], output_dir: str | Path = "", st
     (path / "lora_targets.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def apply_lora_strategy(
+def apply_model_lora(
     model: nn.Module,
     model_name: str,
     lora_settings: dict[str, Any] | None = None,
@@ -439,15 +506,12 @@ def apply_lora_strategy(
     strategy_report_path: str | Path = "",
     allow_head_guess: bool = False,
 ) -> dict[str, Any]:
-    """Apply model-specific LoRA in-place and return a JSON-safe summary."""
-
-    settings = _resolve_lora_settings(lora_settings)
-    if model_name not in LORA_BY_MODEL:
-        raise ValueError(f"No model-specific LoRA policy is defined for {model_name!r}")
+    settings = resolve_lora_settings(lora_settings)
 
     _set_all_trainable(model, False)
-    target_names, notes, strict_summary = LORA_BY_MODEL[model_name](
+    target_names, notes, strict_summary = apply_lora_module_policy(
         model,
+        model_name,
         rank=settings["rank"],
         alpha=settings["alpha"],
         init_scale=settings["init_scale"],
@@ -496,7 +560,7 @@ def apply_lora_strategy(
     if summary["trainable_params"] <= 0:
         raise RuntimeError(f"LoRA produced zero trainable parameters for {model_name}.")
 
-    _write_lora_reports(summary, output_dir=output_dir, strategy_report_path=strategy_report_path)
+    write_lora_reports(summary, output_dir=output_dir, strategy_report_path=strategy_report_path)
     print(
         f"[lora_strategy] {model_name}: "
         f"{summary['trainable_params']}/{summary['total_params']} trainable "

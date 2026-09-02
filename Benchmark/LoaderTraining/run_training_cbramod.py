@@ -25,7 +25,7 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
         sys.executable,
         str(CBRAMOD_SCRIPT),
         "--config",
-        str(args.config),
+        str(Path(args.config).expanduser().resolve()),
     ]
 
     # These optional values intentionally override YAML defaults.
@@ -38,7 +38,11 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     append_if_set(cmd, "--validation_samples", args.validation_samples)
     append_if_set(cmd, "--test_samples", args.test_samples)
     append_if_set(cmd, "--foundation_dir", args.checkpoint)
-    append_if_set(cmd, "--model_dir", args.output_dir)
+    #newly added codes
+    output_dir = resolve_repo_path(args.output_dir)
+    append_if_set(cmd, "--model_dir", output_dir)
+    #newly added codes
+    append_if_set(cmd, "--output_dir", output_dir)
     append_if_set(cmd, "--batch_size", args.batch_size)
     append_if_set(cmd, "--num_workers", args.num_workers)
     append_if_set(cmd, "--epochs", args.epochs)
@@ -46,6 +50,14 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     append_if_set(cmd, "--lr", args.lr)
     append_if_set(cmd, "--weight_decay", args.weight_decay)
     append_if_set(cmd, "--cuda", args.cuda)
+    #newly added codes
+    append_if_set(cmd, "--finetune_strategy", args.finetune_strategy)
+    #newly added codes
+    append_if_set(cmd, "--lora_rank", args.lora_rank)
+    #newly added codes
+    append_if_set(cmd, "--lora_alpha", args.lora_alpha)
+    #newly added codes
+    append_if_set(cmd, "--lora_layers", args.lora_layers)
 
     if args.extra_args:
         extra_args = args.extra_args[1:] if args.extra_args[0] == "--" else args.extra_args
@@ -58,10 +70,21 @@ def append_if_set(cmd: list[str], flag: str, value: object | None) -> None:
         cmd.extend([flag, str(value)])
 
 
+#newly added codes
+def resolve_repo_path(value: str | Path | None) -> Path | None:
+    """Resolve output paths before changing to the CBraMod directory."""
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run CBraMod through the Benchmark YAML connector.")
     parser.add_argument("--config", default=DEFAULT_CONFIG, type=Path)
-    #parser.add_argument("--dry_run", action="store_true", help="Print the command without launching training.")
+    parser.add_argument("--dry_run", action="store_true", help="Print the command without launching training.")
 
     parser.add_argument("--original_data", default=None, help="Override YAML paths.original_data.")
     parser.add_argument("--data_source", default=None, choices=["original", "tuab_unified60"], help="Override YAML data.source.")
@@ -80,6 +103,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", default=None, type=float)
     parser.add_argument("--weight_decay", default=None, type=float)
     parser.add_argument("--cuda", default=None, type=int)
+    #newly added codes
+    parser.add_argument("--finetune_strategy", default=None,
+                        choices=["original", "full_finetune", "freeze_backbone", "lora"])
+    #newly added codes
+    parser.add_argument("--lora_rank", default=None, type=int)
+    #newly added codes
+    parser.add_argument("--lora_alpha", default=None, type=float)
+    #newly added codes
+    parser.add_argument("--lora_layers", default=None)
     parser.add_argument(
         "extra_args",
         nargs=argparse.REMAINDER,

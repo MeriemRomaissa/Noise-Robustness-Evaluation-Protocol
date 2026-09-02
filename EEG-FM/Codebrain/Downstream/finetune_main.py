@@ -106,6 +106,8 @@ def _config_defaults(config):
     fixed_recipe = config.get("fixed_recipe", {})
     fixed_model = fixed_recipe.get("model", {})
     fixed_training = fixed_recipe.get("training", {})
+    #newly added codes
+    fine_tuning = config.get("fine_tuning", {})
 
     if paths.get("original_data"):
         defaults["datasets_dir"] = paths["original_data"]
@@ -125,6 +127,8 @@ def _config_defaults(config):
         #newly added codes
         if data["source"] == "tuab_unified60":
             defaults["downstream_dataset"] = "TUAB"
+            #newly added codes
+            defaults["num_of_classes"] = 2
     if "train_samples" in data:
         defaults["train_samples"] = data["train_samples"]
     if "validation_samples" in data:
@@ -163,6 +167,20 @@ def _config_defaults(config):
                 "frozen", "multi_lr"):
         if key in fixed_training:
             defaults[key] = fixed_training[key]
+    #newly added codes
+    if fine_tuning.get("strategy"):
+        defaults["finetune_strategy"] = fine_tuning["strategy"]
+    #newly added codes
+    lora = fine_tuning.get("lora", {})
+    #newly added codes
+    if "rank" in lora:
+        defaults["lora_rank"] = int(lora["rank"])
+    #newly added codes
+    if "alpha" in lora:
+        defaults["lora_alpha"] = float(lora["alpha"])
+    #newly added codes
+    if "layers" in lora:
+        defaults["lora_layers"] = lora["layers"]
 
     return defaults
 
@@ -319,6 +337,9 @@ def main():
                         default='',
                         help='directory for unified log.txt and checkpoints')
     #newly added codes
+    parser.add_argument('--benchmark_output', action='store_true',
+                        help='write only the shared Benchmark log/checkpoint layout')
+    #newly added codes
     parser.add_argument('--save_ckpt_freq', type=int, default=0,
                         help='also save checkpoint-N.pth every N epochs (0=disabled)')
 
@@ -373,21 +394,42 @@ def main():
     #newly added codes
     parser.add_argument('--pin_memory', type=_str_to_bool, default=True,
                         help='Pin DataLoader memory.')
+    #newly added codes
+    parser.add_argument('--finetune_strategy', type=str, default='original',
+                        choices=['original', 'full_finetune', 'freeze_backbone', 'lora'],
+                        help='Benchmark fine-tuning strategy.')
+    #newly added codes
+    parser.add_argument('--lora_rank', type=int, default=2,
+                        help='LoRA rank used when --finetune_strategy lora.')
+    #newly added codes
+    parser.add_argument('--lora_alpha', type=float, default=8.0,
+                        help='LoRA alpha used when --finetune_strategy lora.')
+    #newly added codes
+    parser.add_argument('--lora_layers', type=str, default='all',
+                        help='LoRA layer selection; current Benchmark policy supports all.')
 
     #newly added codes
     parser.set_defaults(**config_defaults)
     #newly added codes
     params = parser.parse_args(remaining_args)
-    params.model_dir = os.path.join(params.model_dir, params.downstream_dataset) + '/'
-    params.log_dir = os.path.join(params.log_dir, params.downstream_dataset) + '/'
+    #newly added codes
+    # Preserve author-repo folders for native runs, but avoid duplicate
+    # checkpoints/TUAB and logs/TUAB trees in Benchmark runs.
+    if params.benchmark_output:
+        params.model_dir = ''
+        params.log_dir = ''
+        params.file_name = os.devnull
+    else:
+        params.model_dir = os.path.join(params.model_dir, params.downstream_dataset) + '/'
+        params.log_dir = os.path.join(params.log_dir, params.downstream_dataset) + '/'
+        os.makedirs(params.model_dir, exist_ok=True)
+        os.makedirs(params.log_dir, exist_ok=True)
+        current_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+        params.file_name = str(params.log_dir) + str(current_time) + "_" + str(params.cuda) + ".txt"
     #newly added codes
     if params.output_dir:
         os.makedirs(params.output_dir, exist_ok=True)
         open(os.path.join(params.output_dir, "log.txt"), mode="w", encoding="utf-8").close()
-    os.makedirs(params.model_dir, exist_ok=True)
-    os.makedirs(params.log_dir, exist_ok=True)
-    current_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-    params.file_name = str(params.log_dir) + str(current_time) + "_" + str(params.cuda) + ".txt"
     print(params)
     with open(params.file_name, "a") as file:
         file.write(str(params) + "\n")

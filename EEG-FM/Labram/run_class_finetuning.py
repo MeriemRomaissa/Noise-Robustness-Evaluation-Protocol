@@ -173,6 +173,7 @@ def _add_benchmark_paths_to_syspath():
     for relative_path in (
         "DataLoader",
         "choose_StudyCase/Channel",
+        "FinetuningStrategy",
     ):
         path = benchmark_root / relative_path
         if str(path) not in sys.path:
@@ -291,7 +292,8 @@ def get_args():
                         help='Drop path rate (default: 0.1)')
 
     parser.add_argument('--finetune_strategy', type=str, default='original',
-                        choices=['original', 'freeze_backbone', 'freeze_backbone_regularized', 'freeze_early_layers', 'aggressive_reg', 'lora'],
+                        #newly added codes
+                        choices=['original', 'full_finetune', 'freeze_backbone', 'lora'],
                         help='Select a finetuning strategy to apply after loading checkpoint')
     parser.add_argument('--freeze_early_n', type=int, default=None,
                         help='Number of early transformer blocks to freeze when using freeze_early_layers')
@@ -306,9 +308,9 @@ def get_args():
                         help='LoRA alpha scaling factor (default: 8.0)')
     parser.add_argument('--lora_layers', type=str, default='all', metavar='LAYERS_MODE',
                         help='Which blocks to apply LoRA: "all"')
-    parser.add_argument('--lora_target', type=str, default='attention_and_mlp', metavar='TARGET_MODE',
-                        choices=['attention_only', 'mlp_only', 'attention_and_mlp'],
-                        help='Which components to adapt with LoRA (default: "attention_and_mlp")')
+    parser.add_argument('--lora_target', type=str, default='lora_module', metavar='TARGET_MODE',
+                        choices=['lora_module'],
+                        help='Benchmark LoRA target policy (default: "lora_module")')
 
     parser.add_argument('--disable_eval_during_finetuning', action='store_true', default=False)
 
@@ -568,7 +570,8 @@ def main(args, ds_init):
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-    if global_rank == 0 and args.log_dir is not None:
+    #newly added codes
+    if global_rank == 0 and args.log_dir:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = utils.TensorboardLogger(log_dir=args.log_dir)
     else:
@@ -656,13 +659,14 @@ def main(args, ds_init):
 
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
 
-        # Apply selected finetuning strategy
-        try:
-            from Overfitting_Evaluation.finetune_strategies import apply_strategy
-            apply_strategy(model, args)
-        except Exception as e:
-            print('Warning: failed to apply finetuning strategy:', e)
-            print('Continuing with default parameter settings.')
+        #newly added codes
+        # Apply the Benchmark LoRA/freeze helper instead of the old Overfitting_Evaluation path.
+        #newly added codes
+        # Strategy failures must stop the run; silently falling back would
+        # mislabel a requested LoRA/freeze experiment as that strategy.
+        _add_benchmark_paths_to_syspath()
+        from lora_labram import apply_strategy
+        apply_strategy(model, args)
 
     model.to(device)
 
@@ -767,7 +771,8 @@ def main(args, ds_init):
     start_time = time.time()
     max_accuracy = 0.0
     max_accuracy_test = 0.0
-    max_roc_auc = 0.0
+    #newly added codes
+    max_roc_auc = float("-inf")
     max_roc_auc_test = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -801,7 +806,8 @@ def main(args, ds_init):
             print(f"Accuracy of the network on the {len(dataset_test)} test EEG: {test_stats['accuracy']:.2f}%")
             
             if args.nb_classes == 1:  # binary: select on ROC-AUC
-                if max_roc_auc < val_stats["roc_auc"]:
+                #newly added codes
+                if max_roc_auc == float("-inf") or max_roc_auc < val_stats["roc_auc"]:
                     max_roc_auc = val_stats["roc_auc"]
                     if args.output_dir and args.save_ckpt:
                         utils.save_model(

@@ -8,6 +8,7 @@ import json
 import pickle
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -18,14 +19,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BIOT_ROOT = REPO_ROOT / "EEG-FM" / "Biot"
 BENCHMARK_LOADER = REPO_ROOT / "Benchmark" / "DataLoader"
 DEFAULT_CONFIG = REPO_ROOT / "Benchmark" / "Config" / "biot.yaml"
+FINETUNING_STRATEGY_ROOT = REPO_ROOT / "Benchmark" / "FinetuningStrategy"
 
+sys.path.insert(0, str(FINETUNING_STRATEGY_ROOT))
 sys.path.insert(0, str(BENCHMARK_LOADER))
 sys.path.insert(0, str(BIOT_ROOT))
 
+from _lora_common import DEFAULT_LORA_SETTINGS, strategy_freeze_backbone
+from lora_biot import apply_lora_strategy as apply_model_lora_strategy
 from loader_biot import transform_h5_window
 from model import BIOTClassifier
 
 
+MODEL_NAME = "BIOT"
+MODEL_LABEL = "BIOT"
+METRIC_KEYS = ("test_accuracy", "test_balanced_accuracy", "test_roc_auc", "test_pr_auc")
 TUAB_CH = [
     "FP1", "FP2", "F3", "F4", "C3", "C4", "P3", "P4", "O1", "O2",
     "F7", "F8", "T3", "T4", "T5", "T6", "A1", "A2", "FZ", "CZ", "PZ", "T1", "T2",
@@ -100,6 +108,31 @@ def load_checkpoint(model, checkpoint_path: str):
     state_dict = checkpoint.get("model", checkpoint.get("state_dict", checkpoint))
     model.load_state_dict(clean_state_dict(state_dict, model.state_dict()), strict=False)
     return model
+
+
+def apply_checkpoint_strategy(model, strategy: str, output_dir: Path):
+    if strategy in {"full_ft", "full_finetune", "original"}:
+        return None
+    if strategy == "freeze_backbone":
+        args = SimpleNamespace(model_name=MODEL_NAME, model=MODEL_NAME, allow_head_guess=True)
+        return strategy_freeze_backbone(model, args, model_name=MODEL_NAME)
+    if strategy == "lora":
+        return apply_model_lora_strategy(
+            model,
+            lora_settings=DEFAULT_LORA_SETTINGS,
+            output_dir=output_dir,
+            allow_head_guess=True,
+        )
+    raise ValueError(f"Unknown inference checkpoint strategy: {strategy}")
+
+
+def load_strategy_checkpoint(model, checkpoint_path: str, strategy: str, output_dir: Path):
+    apply_checkpoint_strategy(
+        model,
+        strategy,
+        output_dir=output_dir / strategy,
+    )
+    return load_checkpoint(model, checkpoint_path)
 
 
 def load_eegnet_nmt_results(json_path: Path) -> dict:
@@ -195,9 +228,21 @@ def write_nmt_outputs(output_dir: Path, results: dict):
     records = [
         benchmark_log_record("BIOT Full FT", results["full_ft"]["nmt_ood"],
                              results["full_ft"]["checkpoint"], "NMT_OOD"),
-        benchmark_log_record("EEGNet", results["eegnet"]["nmt_ood"],
-                             results["eegnet"]["source_json"], "NMT_OOD"),
     ]
+    if "freeze_backbone" in results:
+        records.append(
+            benchmark_log_record("BIOT Freeze Backbone", results["freeze_backbone"]["nmt_ood"],
+                                 results["freeze_backbone"]["checkpoint"], "NMT_OOD")
+        )
+    if "lora" in results:
+        records.append(
+            benchmark_log_record("BIOT LoRA", results["lora"]["nmt_ood"],
+                                 results["lora"]["checkpoint"], "NMT_OOD")
+        )
+    records.append(
+        benchmark_log_record("EEGNet", results["eegnet"]["nmt_ood"],
+                             results["eegnet"]["source_json"], "NMT_OOD")
+    )
     with (output_dir / "log.txt").open("w", encoding="utf-8") as f:
         for record in records:
             f.write(json.dumps(record, sort_keys=True) + "\n")
@@ -213,6 +258,11 @@ def metric_delta(left: dict, right: dict, key: str):
     return float(left[key] - right[key])
 
 
+def add_metric_deltas(comparison: dict, left_name: str, left_metrics: dict, right_name: str, right_metrics: dict) -> None:
+    for key in METRIC_KEYS:
+        comparison[f"{left_name}_minus_{right_name}_{key}"] = metric_delta(left_metrics, right_metrics, key)
+
+
 def config_checkpoint(config: dict) -> str | None:
     paths = config.get("paths", {})
     fixed_paths = config.get("fixed_recipe", {}).get("paths", {})
@@ -223,6 +273,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run BIOT NMT OOD inference.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--ckpt_freeze_backbone", default=None)
+    parser.add_argument("--ckpt_lora", default=None)
     parser.add_argument("--eegnet_json", type=Path, default=NMT_BASE / "nmt_eegnet_results.json")
     parser.add_argument("--nmt_dir", type=Path, default=NMT_BASE / "test")
     parser.add_argument("--output_dir", default=None)
@@ -247,6 +299,8 @@ def main():
     if args.dry_run:
         print(f"config={args.config}")
         print(f"checkpoint={checkpoint_path}")
+        print(f"ckpt_freeze_backbone={args.ckpt_freeze_backbone}")
+        print(f"ckpt_lora={args.ckpt_lora}")
         print(f"eegnet_json={args.eegnet_json}")
         print(f"nmt_dir={args.nmt_dir}")
         print(f"output_dir={output_dir}")
@@ -286,6 +340,24 @@ def main():
             "full_ft_minus_eegnet_test_pr_auc": metric_delta(metrics, eegnet_metrics, "test_pr_auc"),
         },
     }
+    if args.ckpt_freeze_backbone:
+        model_freeze = load_strategy_checkpoint(build_model(config), args.ckpt_freeze_backbone, "freeze_backbone", output_dir)
+        freeze_metrics = run_nmt_inference(model_freeze, dataset, device, batch_size, float(threshold))
+        results["freeze_backbone"] = {
+            "nmt_ood": freeze_metrics,
+            "checkpoint": args.ckpt_freeze_backbone,
+        }
+        add_metric_deltas(results["comparison"], "freeze_backbone", freeze_metrics, "full_ft", metrics)
+        add_metric_deltas(results["comparison"], "freeze_backbone", freeze_metrics, "eegnet", eegnet_metrics)
+    if args.ckpt_lora:
+        model_lora = load_strategy_checkpoint(build_model(config), args.ckpt_lora, "lora", output_dir)
+        lora_metrics = run_nmt_inference(model_lora, dataset, device, batch_size, float(threshold))
+        results["lora"] = {
+            "nmt_ood": lora_metrics,
+            "checkpoint": args.ckpt_lora,
+        }
+        add_metric_deltas(results["comparison"], "lora", lora_metrics, "full_ft", metrics)
+        add_metric_deltas(results["comparison"], "lora", lora_metrics, "eegnet", eegnet_metrics)
     write_nmt_outputs(output_dir, results)
     print(f"Wrote {output_dir / 'nmt_ood_results.json'}")
     print(f"Wrote {output_dir / 'log.txt'}")

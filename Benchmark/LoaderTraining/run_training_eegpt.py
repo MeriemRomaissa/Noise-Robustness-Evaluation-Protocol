@@ -26,7 +26,7 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
         sys.executable,
         str(EEGPT_SCRIPT),
         "--config",
-        str(args.config),
+        str(Path(args.config).expanduser().resolve()),
     ]
 
     # These optional values intentionally override YAML defaults.
@@ -40,16 +40,32 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     append_if_set(cmd, "--validation_samples", args.validation_samples)
     append_if_set(cmd, "--test_samples", args.test_samples)
     append_if_set(cmd, "--finetune", args.checkpoint)
-    append_if_set(cmd, "--output_dir", args.output_dir)
-    append_if_set(cmd, "--log_dir", args.log_dir)
+    #newly added codes
+    append_if_set(cmd, "--output_dir", resolve_repo_path(args.output_dir))
+    #newly added codes
+    #newly added codes
+    # An empty CLI value overrides the YAML TensorBoard default so Benchmark
+    # runs keep only the shared output contract unless explicitly requested.
+    log_dir = resolve_repo_path(args.log_dir) if args.log_dir is not None else ""
+    append_if_set(cmd, "--log_dir", log_dir)
     append_if_set(cmd, "--batch_size", args.batch_size)
     append_if_set(cmd, "--num_workers", args.num_workers)
     append_if_set(cmd, "--epochs", args.epochs)
     append_if_set(cmd, "--seed", args.seed)
     append_if_set(cmd, "--lr", args.lr)
     append_if_set(cmd, "--device", args.device)
+    append_if_set(cmd, "--warmup_epochs", args.warmup_epochs)
+    append_if_set(cmd, "--warmup_steps", args.warmup_steps)
+    #newly added codes
+    append_if_set(cmd, "--finetune_strategy", args.finetune_strategy)
     append_if_set(cmd, "--classification_threshold", args.classification_threshold)
     append_if_set(cmd, "--report_metrics", args.report_metrics)
+    #newly added codes
+    append_if_set(cmd, "--lora_rank", args.lora_rank)
+    #newly added codes
+    append_if_set(cmd, "--lora_alpha", args.lora_alpha)
+    #newly added codes
+    append_if_set(cmd, "--lora_layers", args.lora_layers)
 
     if args.no_auto_resume:
         cmd.append("--no_auto_resume")
@@ -66,10 +82,21 @@ def append_if_set(cmd: list[str], flag: str, value: object | None) -> None:
         cmd.extend([flag, str(value)])
 
 
+#newly added codes
+def resolve_repo_path(value: str | Path | None) -> Path | None:
+    """Resolve connector output paths before changing to the EEGPT directory."""
+    if value is None:
+        return None
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run EEGPT through the Benchmark YAML connector.")
     parser.add_argument("--config", default=DEFAULT_CONFIG, type=Path)
-    #parser.add_argument("--dry_run", action="store_true", help="Print the command without launching training.")
+    parser.add_argument("--dry_run", action="store_true", help="Print the command without launching training.")
 
     parser.add_argument("--original_data", default=None, help="Override YAML paths.original_data.")
     parser.add_argument("--data_source", default=None, choices=["original", "tuab_unified60"], help="Override YAML data.source.")
@@ -89,8 +116,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", default=None, type=int)
     parser.add_argument("--lr", default=None, type=float)
     parser.add_argument("--device", default=None)
+    parser.add_argument("--warmup_epochs", default=None, type=int)
+    parser.add_argument("--warmup_steps", default=None, type=int)
+    #newly added codes
+    parser.add_argument("--finetune_strategy", default=None,
+                        choices=["original", "full_finetune", "freeze_backbone", "lora"])
     parser.add_argument("--classification_threshold", default=None, type=float)
     parser.add_argument("--report_metrics", default=None, help="Comma-separated metric names.")
+    #newly added codes
+    parser.add_argument("--lora_rank", default=None, type=int)
+    #newly added codes
+    parser.add_argument("--lora_alpha", default=None, type=float)
+    #newly added codes
+    parser.add_argument("--lora_layers", default=None)
     parser.add_argument("--no_auto_resume", action="store_true")
     parser.add_argument("--no_pin_mem", action="store_true")
     parser.add_argument(

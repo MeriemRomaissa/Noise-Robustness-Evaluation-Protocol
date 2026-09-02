@@ -243,6 +243,8 @@ def _config_defaults(config):
     loader = config.get("loader", {})
     training = config.get("training", {})
     evaluation = config.get("evaluation", {})
+    #newly added codes
+    fine_tuning = config.get("fine_tuning", {})
 
     if paths.get("original_data"):
         defaults["data_path"] = paths["original_data"]
@@ -291,6 +293,20 @@ def _config_defaults(config):
         defaults["classification_threshold"] = float(evaluation["classification_threshold"])
     if evaluation.get("report_metrics"):
         defaults["report_metrics"] = ",".join(str(item) for item in evaluation["report_metrics"])
+    #newly added codes
+    if fine_tuning.get("strategy"):
+        defaults["finetune_strategy"] = fine_tuning["strategy"]
+    #newly added codes
+    lora = fine_tuning.get("lora", {})
+    #newly added codes
+    if "rank" in lora:
+        defaults["lora_rank"] = int(lora["rank"])
+    #newly added codes
+    if "alpha" in lora:
+        defaults["lora_alpha"] = float(lora["alpha"])
+    #newly added codes
+    if "layers" in lora:
+        defaults["lora_layers"] = lora["layers"]
 
     return defaults
 
@@ -310,10 +326,27 @@ def _add_benchmark_paths_to_syspath():
     for relative_path in (
         "DataLoader",
         "choose_StudyCase/Channel",
+        "FinetuningStrategy",
     ):
         path = benchmark_root / relative_path
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
+
+
+#newly added codes
+def _apply_benchmark_finetune_strategy(model, args):
+    """Apply optional Benchmark LoRA/freeze policy before optimizer creation."""
+    strategy = getattr(args, "finetune_strategy", "original")
+    if strategy in {"original", "full_finetune", "", None}:
+        return None
+    _add_benchmark_paths_to_syspath()
+    import lora_eegpt
+
+    args.model_name = "EEGPT"
+    args.allow_head_guess = True
+    summary = lora_eegpt.apply_strategy(model, args)
+    print(f"[Benchmark] finetune_strategy={strategy} summary={summary}", flush=True)
+    return summary
 
 
 #newly added codes
@@ -531,6 +564,19 @@ def get_args():
     #newly added codes
     parser.add_argument('--report_metrics', default='pr_auc,roc_auc,accuracy,balanced_accuracy', type=str,
                         help='Comma-separated metrics for Benchmark unified H5 evaluation.')
+    #newly added codes
+    parser.add_argument('--finetune_strategy', default='original', type=str,
+                        choices=['original', 'full_finetune', 'freeze_backbone', 'lora'],
+                        help='Benchmark fine-tuning strategy.')
+    #newly added codes
+    parser.add_argument('--lora_rank', default=2, type=int,
+                        help='LoRA rank used when --finetune_strategy lora.')
+    #newly added codes
+    parser.add_argument('--lora_alpha', default=8.0, type=float,
+                        help='LoRA alpha used when --finetune_strategy lora.')
+    #newly added codes
+    parser.add_argument('--lora_layers', default='all', type=str,
+                        help='LoRA layer selection; current Benchmark policy supports all.')
 
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
@@ -727,7 +773,8 @@ def main(args, ds_init):
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-    if global_rank == 0 and args.log_dir is not None:
+    #newly added codes
+    if global_rank == 0 and args.log_dir:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = utils.TensorboardLogger(log_dir=args.log_dir)
     else:
@@ -813,6 +860,8 @@ def main(args, ds_init):
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
 
     model.to(device)
+    #newly added codes
+    _apply_benchmark_finetune_strategy(model, args)
 
     model_ema = None
     if args.model_ema:
@@ -915,6 +964,9 @@ def main(args, ds_init):
     start_time = time.time()
     max_accuracy = 0.0
     max_accuracy_test = 0.0
+    #newly added codes
+    max_roc_auc = float("-inf")
+    max_roc_auc_test = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -946,15 +998,27 @@ def main(args, ds_init):
                                   classification_threshold=args.classification_threshold)
             print(f"Accuracy of the network on the {len(dataset_test)} test EEG: {test_stats['accuracy']:.2f}%")
             
-            if max_accuracy < val_stats["accuracy"]:
-                max_accuracy = val_stats["accuracy"]
-                if args.output_dir and args.save_ckpt:
-                    utils.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
-                max_accuracy_test = test_stats["accuracy"]
-
-            print(f'Max accuracy val: {max_accuracy:.2f}%, max accuracy test: {max_accuracy_test:.2f}%')
+            #newly added codes
+            # TUAB is binary, so the shared Benchmark contract selects the
+            # best checkpoint by validation ROC-AUC, including epoch zero.
+            if args.nb_classes == 1:
+                if max_roc_auc == float("-inf") or max_roc_auc < val_stats["roc_auc"]:
+                    max_roc_auc = val_stats["roc_auc"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+                    max_roc_auc_test = test_stats["roc_auc"]
+                print(f'Max ROC-AUC val: {max_roc_auc:.4f}, max ROC-AUC test: {max_roc_auc_test:.4f}')
+            else:
+                if max_accuracy < val_stats["accuracy"]:
+                    max_accuracy = val_stats["accuracy"]
+                    if args.output_dir and args.save_ckpt:
+                        utils.save_model(
+                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                            loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
+                    max_accuracy_test = test_stats["accuracy"]
+                print(f'Max accuracy val: {max_accuracy:.2f}%, max accuracy test: {max_accuracy_test:.2f}%')
             if log_writer is not None:
                 for key, value in val_stats.items():
                     if key == 'accuracy':
