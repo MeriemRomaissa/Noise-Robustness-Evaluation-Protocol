@@ -1,13 +1,17 @@
 # user can edit configures / choose configurable options.
 paths:
-  h5_file: /path/to/canonical_tuab_full.h5
-  split_index: /path/to/canonical_split_index.csv
+  h5_file: /nicoletye/workspace/unified_tuab/data/canonical_tuab_full.h5
+  split_index: /nicoletye/workspace/unified_tuab/reports/canonical_h5_labram_referenced_max_coverage_split_index.csv
   original_data: /path/to/original/csbrain_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CSBrain
   # Expected by EEG-FM/CSBrain/sh/finetune_CSBrain_TUAB.sh.
   # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
-  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CSBrain/pth/CSBrain.pth
-  output: outputs/csbrain
+  checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/CSBrain/downloaded_weights/pth/CSBrain.pth
+  output: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/full finetuning/csbrain
+  strategy_outputs:
+    full_finetune: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/full finetuning/csbrain
+    freeze_backbone: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/freeze backbone/csbrain
+    lora: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/lora/csbrain
 
 data:
   source: tuab_unified60
@@ -34,3 +38,15 @@ evaluation:
   selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
+
+# NMT OOD inference inputs. Repository-relative paths resolve from project root.
+inference:
+  nmt_dir: /nicoletye/workspace/nmt_scalp_eeg_labram_ood/test
+  eegnet_json: Benchmark/Config/eegnet_nmt_baseline.json
+  output: Benchmark/Outputs/nmt_ood/csbrain
+  checkpoints:
+    full_finetune: Benchmark/Outputs/full finetuning/csbrain/checkpoint-best.pth
+    freeze_backbone: Benchmark/Outputs/freeze backbone/csbrain/checkpoint-best.pth
+    lora: Benchmark/Outputs/lora/csbrain/checkpoint-best.pth
+  max_samples: null
+  device: null

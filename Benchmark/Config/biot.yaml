@@ -1,13 +1,17 @@
 # These are the fields to edit.
 paths:
-  h5_file: /path/to/canonical_tuab_full.h5
-  split_index: /path/to/canonical_split_index.csv
+  h5_file: /nicoletye/workspace/unified_tuab/data/canonical_tuab_full.h5
+  split_index: /nicoletye/workspace/unified_tuab/reports/canonical_h5_labram_referenced_max_coverage_split_index.csv
   original_data: /path/to/original/biot_pkls
   model_repo: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot
   # Expected by EEG-FM/Biot/README.md reference runs.
   # The checkpoint file is an EEG-FM dependency and is not stored in Benchmark.
   checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Biot/pretrained-models/EEG-PREST-16-channels.ckpt
-  output: outputs/biot
+  output: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/full finetuning/biot
+  strategy_outputs:
+    full_finetune: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/full finetuning/biot
+    freeze_backbone: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/freeze backbone/biot
+    lora: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/lora/biot
 
 data:
   source: tuab_unified60
@@ -49,3 +53,15 @@ evaluation:
   selection_metric: roc_auc
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy] # report all
+
+# NMT OOD inference inputs. Repository-relative paths resolve from project root.
+inference:
+  nmt_dir: /nicoletye/workspace/nmt_scalp_eeg_labram_ood/test
+  eegnet_json: Benchmark/Config/eegnet_nmt_baseline.json
+  output: Benchmark/Outputs/nmt_ood/biot
+  checkpoints:
+    full_finetune: Benchmark/Outputs/full finetuning/biot/checkpoint-best.pth
+    freeze_backbone: Benchmark/Outputs/freeze backbone/biot/checkpoint-best.pth
+    lora: Benchmark/Outputs/lora/biot/checkpoint-best.pth
+  max_samples: null
+  device: null

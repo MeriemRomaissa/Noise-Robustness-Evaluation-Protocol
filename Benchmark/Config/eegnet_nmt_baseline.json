@@ -1,0 +1,15 @@
+{
+  "description": "EEGNet clean TUAB and NMT OOD reference metrics used by Benchmark inference comparisons.",
+  "tuab_clean": {
+    "accuracy": 0.7869,
+    "balanced_accuracy": 0.7821,
+    "roc_auc": 0.8536,
+    "epoch": 11
+  },
+  "nmt_ood": {
+    "accuracy": 0.8193950023943735,
+    "balanced_accuracy": 0.5000159723996933,
+    "auc": 0.6273233573225636,
+    "n_samples": 173323
+  }
+}

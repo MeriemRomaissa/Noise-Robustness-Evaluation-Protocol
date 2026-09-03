@@ -4,8 +4,8 @@
 paths:
   # Used by Benchmark-native loaders. The original LaBraM EDF/PKL trainer does
   # not consume H5 rows directly.
-  h5_file: /path/to/canonical_tuab_full.h5
-  split_index: /path/to/canonical_split_index.csv
+  h5_file: /nicoletye/workspace/unified_tuab/data/canonical_tuab_full.h5
+  split_index: /nicoletye/workspace/unified_tuab/reports/canonical_h5_labram_referenced_max_coverage_split_index.csv
 
   # Mapped to the original LaBraM --data_path argument.
   original_data: /path/to/original/labram_pkls
@@ -17,8 +17,12 @@ paths:
   # Mapped to original LaBraM --finetune.
   checkpoint: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/EEG-FM/Labram/checkpoints/labram-base.pth
 
-  # Mapped to original LaBraM --output_dir; log_dir defaults to output/tensorboard.
-  output: outputs/labram
+  # The Benchmark connector selects one of these from fine_tuning.strategy.
+  output: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/full finetuning/labram
+  strategy_outputs:
+    full_finetune: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/full finetuning/labram
+    freeze_backbone: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/freeze backbone/labram
+    lora: /nicoletye/workspace/Noise-Robustness-Evaluation-Protocol/Benchmark/Outputs/lora/labram
 
 data:
   # Benchmark-native source label. Original LaBraM uses --dataset TUAB plus
@@ -63,3 +67,15 @@ evaluation:
   classification_threshold: 0.5
   report_metrics: [balanced_accuracy, roc_auc, pr_auc, accuracy]
 
+# NMT OOD inference inputs. Repository-relative paths are resolved from the
+# project root, so inference can be launched from any working directory.
+inference:
+  nmt_dir: /nicoletye/workspace/nmt_scalp_eeg_labram_ood/test
+  eegnet_json: Benchmark/Config/eegnet_nmt_baseline.json
+  output: Benchmark/Outputs/nmt_ood/labram
+  checkpoints:
+    full_finetune: Benchmark/Outputs/full finetuning/labram/checkpoint-best.pth
+    freeze_backbone: Benchmark/Outputs/freeze backbone/labram/checkpoint-best.pth
+    lora: Benchmark/Outputs/lora/labram/checkpoint-best.pth
+  max_samples: null  # Set an integer for a smoke test; null evaluates all NMT samples.
+  device: null  # null selects CUDA when available, otherwise CPU.

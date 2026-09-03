@@ -65,9 +65,34 @@ def infer_model_name(path: Path, data: dict[str, Any]) -> str:
     return path.parent.name
 
 
+def infer_seed(path: Path, data: dict[str, Any]):
+    """Read a seed from saved metadata or a parent directory named seed_<N>."""
+    if data.get("seed") is not None:
+        return data["seed"]
+    for part in reversed(path.parts):
+        if not part.startswith("seed_"):
+            continue
+        value = part.removeprefix("seed_")
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    return None
+
+
+def plot_label(row: dict[str, Any]) -> str:
+    seed = row.get("seed")
+    if seed is None:
+        return row["condition"]
+    if row["model"] == "EEGNet":
+        return f"EEGNet reference\nseed group={seed}"
+    return f"{row['condition']}\nseed={seed}"
+
+
 def records_from_result(path: Path) -> list[dict[str, Any]]:
     data = load_json(path)
     records: list[dict[str, Any]] = []
+    seed = infer_seed(path, data)
 
     if any(key in data for key in ("ft", "full_ft", "freeze_backbone", "lora", "eegnet")):
         primary_model = infer_model_name(path, data)
@@ -85,6 +110,7 @@ def records_from_result(path: Path) -> list[dict[str, Any]]:
             row = {
                 "model": "EEGNet" if key == "eegnet" else primary_model,
                 "condition": label,
+                "seed": seed,
                 "result_path": str(path),
                 "checkpoint": entry.get("checkpoint") or entry.get("source_json"),
             }
@@ -98,6 +124,7 @@ def records_from_result(path: Path) -> list[dict[str, Any]]:
     row = {
         "model": model,
         "condition": condition,
+        "seed": seed,
         "result_path": str(path),
         "checkpoint": data.get("checkpoint"),
     }
@@ -110,6 +137,23 @@ def collect_records(paths: list[Path]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for path in paths:
         records.extend(records_from_result(path))
+    strategy_order = {"Full FT": 0, "Freeze Backbone": 1, "LoRA": 2, "EEGNet": 3}
+
+    def sort_key(row):
+        seed = row.get("seed")
+        if seed is None:
+            seed_key = (2, 0, "")
+        elif str(seed).isdigit():
+            seed_key = (0, int(seed), "")
+        else:
+            seed_key = (1, 0, str(seed))
+        rank = next(
+            (value for name, value in strategy_order.items() if name in row["condition"]),
+            len(strategy_order),
+        )
+        return seed_key, rank
+
+    records.sort(key=sort_key)
     return records
 
 
@@ -159,7 +203,7 @@ def plot_ood_bars(records: list[dict[str, Any]], output_dir: Path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    labels = [row["condition"] for row in records]
+    labels = [plot_label(row) for row in records]
     x = np.arange(len(records))
     for metric, title in OOD_METRICS:
         values = [as_float(row.get(f"nmt_ood_{metric}")) for row in records]
@@ -197,7 +241,7 @@ def plot_clean_vs_ood(records: list[dict[str, Any]], output_dir: Path):
     if not available:
         return
 
-    labels = [row["condition"] for row in available]
+    labels = [plot_label(row) for row in available]
     x = np.arange(len(available))
     width = 0.35
     for metric, title in OOD_METRICS:
@@ -241,7 +285,7 @@ def plot_relative_robustness(records: list[dict[str, Any]], output_dir: Path):
     if not available:
         return
 
-    labels = [row["condition"] for row in available]
+    labels = [plot_label(row) for row in available]
     values = [
         as_float(row["nmt_ood_accuracy"]) / as_float(row["clean_accuracy"])
         if as_float(row["clean_accuracy"]) not in (None, 0.0) else None
@@ -280,7 +324,7 @@ def plot_accuracy_drop(records: list[dict[str, Any]], output_dir: Path):
     if not available:
         return
 
-    labels = [row["condition"] for row in available]
+    labels = [plot_label(row) for row in available]
     drops = [
         as_float(row["clean_accuracy"]) - as_float(row["nmt_ood_accuracy"])
         for row in available

@@ -8,6 +8,7 @@ as defaults through the author script and only appends explicit CLI overrides.
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import subprocess
 import sys
@@ -39,7 +40,7 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
     append_if_set(cmd, "--test_samples", args.test_samples)
     append_if_set(cmd, "--foundation_dir", args.checkpoint)
     #newly added codes
-    output_dir = resolve_repo_path(args.output_dir)
+    output_dir = resolve_repo_path(args.output_dir) if args.output_dir is not None else selected_yaml_output(args.config, args.finetune_strategy)
     append_if_set(cmd, "--model_dir", output_dir)
     #newly added codes
     append_if_set(cmd, "--output_dir", output_dir)
@@ -79,6 +80,25 @@ def resolve_repo_path(value: str | Path | None) -> Path | None:
     if path.is_absolute():
         return path
     return (REPO_ROOT / path).resolve()
+
+
+def selected_yaml_output(config_path: Path, strategy_override: str | None = None) -> Path:
+    """Select the standardized output directory from fine_tuning.strategy."""
+    import yaml
+
+    config_path = Path(config_path).expanduser().resolve()
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    paths = config.get("paths", {})
+    strategy = strategy_override or config.get("fine_tuning", {}).get("strategy", "full_finetune")
+    strategy = "full_finetune" if strategy == "original" else strategy
+    strategy_outputs = paths.get("strategy_outputs", {})
+    if strategy_outputs and strategy not in strategy_outputs:
+        raise ValueError(f"Unknown fine_tuning.strategy {strategy!r}; choose one of {sorted(strategy_outputs)}")
+    output = strategy_outputs.get(strategy) or paths.get("output")
+    resolved = resolve_repo_path(output)
+    if resolved is None:
+        raise ValueError(f"No paths.strategy_outputs.{strategy} or paths.output in {config_path}")
+    return resolved
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,7 +146,9 @@ def main() -> int:
     print("COMMAND:", shlex.join(cmd), flush=True)
     if args.dry_run:
         return 0
-    return subprocess.run(cmd, cwd=CBRAMOD_SCRIPT.parent).returncode
+    env = dict(os.environ)
+    env.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+    return subprocess.run(cmd, cwd=CBRAMOD_SCRIPT.parent, env=env).returncode
 
 
 if __name__ == "__main__":

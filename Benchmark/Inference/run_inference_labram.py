@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import torch
 from einops import rearrange
 from torch.utils.data import DataLoader, Dataset
@@ -42,19 +46,6 @@ TUAB_CH = [
     "FP1", "FP2", "F3", "F4", "C3", "C4", "P3", "P4", "O1", "O2",
     "F7", "F8", "T3", "T4", "T5", "T6", "A1", "A2", "FZ", "CZ", "PZ", "T1", "T2",
 ]
-
-NMT_BASE = Path("/home/meriem-ubuntu/Projects/Foundation-models/nmt_scalp_eeg_labram_ood")
-NMT_CKPT_BASE = NMT_BASE / "Checkpoints"
-
-
-# TUAB clean metrics are optional context for the NMT OOD report. They are not
-# recomputed here.
-CLEAN_TUAB = {
-    "ft": {"accuracy": 0.8228, "balanced_accuracy": 0.8186, "roc_auc": 0.9040, "epoch": 1},
-    "lora": {"accuracy": 0.8186, "balanced_accuracy": 0.8144, "roc_auc": 0.8981, "epoch": 22},
-    "eegnet": {"accuracy": 0.7869, "balanced_accuracy": 0.7821, "roc_auc": 0.8536, "epoch": 11},
-}
-
 
 class _NumpyCompatUnpickler(pickle.Unpickler):
     """Load numpy>=2 pickles in older numpy environments."""
@@ -95,7 +86,31 @@ def load_config(path: Path) -> dict:
     import yaml
 
     with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
+
+
+def resolve_repo_path(value: str | Path | None) -> Path | None:
+    """Resolve YAML paths consistently, independent of the launch directory."""
+    if value in (None, ""):
+        return None
+    path = Path(value).expanduser()
+    return path.resolve() if path.is_absolute() else (REPO_ROOT / path).resolve()
+
+
+def validate_inference_inputs(nmt_dir: Path | None, eegnet_json: Path | None,
+                              checkpoints: dict[str, Path | None]) -> None:
+    problems = []
+    if nmt_dir is None or not nmt_dir.is_dir():
+        problems.append(f"inference.nmt_dir is not a directory: {nmt_dir}")
+    if eegnet_json is None or not eegnet_json.is_file():
+        problems.append(f"inference.eegnet_json is not a file: {eegnet_json}")
+    if checkpoints["full_finetune"] is None:
+        problems.append("inference.checkpoints.full_finetune is required")
+    for strategy, path in checkpoints.items():
+        if path is not None and not path.is_file():
+            problems.append(f"inference.checkpoints.{strategy} is not a file: {path}")
+    if problems:
+        raise FileNotFoundError("Invalid inference configuration:\n- " + "\n- ".join(problems))
 
 
 def build_model():
@@ -117,14 +132,15 @@ def build_model():
     return get_models(model_args)
 
 
-def load_checkpoint(model, checkpoint_path: str):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+def load_checkpoint(model, checkpoint_path: str, checkpoint=None):
+    checkpoint = checkpoint if checkpoint is not None else torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint.get("model", checkpoint) if isinstance(checkpoint, dict) else checkpoint
     model.load_state_dict(state_dict, strict=False)
+    model._benchmark_checkpoint_epoch = checkpoint.get("epoch") if isinstance(checkpoint, dict) else None
     return model
 
 
-def apply_checkpoint_strategy(model, strategy: str, output_dir: Path):
+def apply_checkpoint_strategy(model, strategy: str, output_dir: Path, lora_settings: dict | None = None):
     if strategy in {"full_ft", "full_finetune", "original"}:
         return None
     if strategy == "freeze_backbone":
@@ -133,7 +149,7 @@ def apply_checkpoint_strategy(model, strategy: str, output_dir: Path):
     if strategy == "lora":
         return apply_model_lora_strategy(
             model,
-            lora_settings=DEFAULT_LORA_SETTINGS,
+            lora_settings=lora_settings or DEFAULT_LORA_SETTINGS,
             output_dir=output_dir,
             allow_head_guess=True,
         )
@@ -142,17 +158,59 @@ def apply_checkpoint_strategy(model, strategy: str, output_dir: Path):
 
 def load_strategy_checkpoint(checkpoint_path: str, strategy: str, output_dir: Path):
     model = build_model()
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
     apply_checkpoint_strategy(
         model,
         strategy,
         output_dir=output_dir / strategy,
+        lora_settings=checkpoint_lora_settings(checkpoint) if strategy == "lora" else None,
     )
-    return load_checkpoint(model, checkpoint_path)
+    return load_checkpoint(model, checkpoint_path, checkpoint=checkpoint)
 
 
-def load_eegnet_nmt_results(json_path: Path) -> dict:
+def checkpoint_lora_settings(checkpoint) -> dict:
+    """Rebuild the exact LoRA shape recorded by the training checkpoint."""
+    saved_args = checkpoint.get("args") if isinstance(checkpoint, dict) else None
+    get_value = saved_args.get if isinstance(saved_args, dict) else lambda key, default=None: getattr(saved_args, key, default)
+    return {
+        "rank": get_value("lora_rank", DEFAULT_LORA_SETTINGS["rank"]),
+        "alpha": get_value("lora_alpha", DEFAULT_LORA_SETTINGS["alpha"]),
+        "layers": get_value("lora_layers", DEFAULT_LORA_SETTINGS["layers"]),
+        "target": get_value("lora_target", DEFAULT_LORA_SETTINGS["target"]),
+        "init_scale": get_value("lora_init_scale", DEFAULT_LORA_SETTINGS["init_scale"]),
+    }
+
+
+def load_eegnet_results(json_path: Path) -> tuple[dict, dict]:
     with Path(json_path).open("r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    data = data.get("eegnet", data)
+    clean_metrics = data.get("tuab_clean")
+    if not isinstance(clean_metrics, dict):
+        raise ValueError(f"EEGNet JSON must contain a tuab_clean object: {json_path}")
+    return normalize_eegnet_nmt_metrics(data.get("nmt_ood", data)), clean_metrics
+
+
+def load_clean_tuab_metrics(checkpoint_path: Path, checkpoint_epoch) -> dict:
+    """Read clean TUAB metrics corresponding to the selected best checkpoint."""
+    log_path = checkpoint_path.parent / "log.txt"
+    if not log_path.is_file():
+        raise FileNotFoundError(f"standardized training log not found beside checkpoint: {log_path}")
+    records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    matching = [record for record in records if record.get("epoch") == checkpoint_epoch]
+    if not matching:
+        matching = [record for record in records if record.get("val_roc_auc") is not None]
+    if not matching:
+        raise ValueError(f"no validation ROC-AUC records found in {log_path}")
+    record = max(matching, key=lambda item: float(item["val_roc_auc"]))
+    return {
+        "accuracy": record.get("test_accuracy"),
+        "balanced_accuracy": record.get("test_balanced_accuracy"),
+        "roc_auc": record.get("test_roc_auc"),
+        "pr_auc": record.get("test_pr_auc"),
+        "loss": record.get("test_loss"),
+        "epoch": record.get("epoch"),
+    }
 
 
 def normalize_eegnet_nmt_metrics(metrics: dict) -> dict:
@@ -264,15 +322,18 @@ def write_nmt_outputs(output_dir: Path, results: dict):
 def parse_args():
     parser = argparse.ArgumentParser(description="Run LaBraM NMT OOD inference.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
-    parser.add_argument("--ckpt_ft", default=str(NMT_CKPT_BASE / "checkpoint-best-original-42-TUAB.pth"))
+    parser.add_argument("--ckpt_ft", default=None,
+                        help="Override YAML inference.checkpoints.full_finetune.")
     parser.add_argument("--ckpt_freeze_backbone", default=None,
                         help="Optional freeze-backbone checkpoint.")
     parser.add_argument("--ckpt_lora", default=None,
                         help="Optional LoRA checkpoint. If omitted, compare Full FT vs EEGNet only.")
-    parser.add_argument("--eegnet_json", type=Path, default=NMT_BASE / "nmt_eegnet_results.json",
-                        help="Precomputed EEGNet NMT metrics JSON.")
-    parser.add_argument("--nmt_dir", type=Path, default=NMT_BASE / "test")
-    parser.add_argument("--output_dir", default=None)
+    parser.add_argument("--eegnet_json", type=Path, default=None,
+                        help="Override YAML inference.eegnet_json.")
+    parser.add_argument("--nmt_dir", type=Path, default=None,
+                        help="Override YAML inference.nmt_dir.")
+    parser.add_argument("--output_dir", default=None,
+                        help="Override YAML inference.output.")
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--classification_threshold", type=float, default=None)
@@ -284,26 +345,52 @@ def parse_args():
 def main():
     args = parse_args()
     config = load_config(args.config)
-    paths = config.get("paths", {})
+    inference = config.get("inference", {})
+    checkpoint_config = inference.get("checkpoints", {})
     evaluation = config.get("evaluation", {})
-    output_dir = Path(args.output_dir or paths.get("output", "outputs/labram"))
-    threshold = args.classification_threshold or evaluation.get("classification_threshold", 0.5)
+    checkpoints = {
+        "full_finetune": resolve_repo_path(args.ckpt_ft or checkpoint_config.get("full_finetune")),
+        "freeze_backbone": resolve_repo_path(
+            args.ckpt_freeze_backbone or checkpoint_config.get("freeze_backbone")
+        ),
+        "lora": resolve_repo_path(args.ckpt_lora or checkpoint_config.get("lora")),
+    }
+    nmt_dir = resolve_repo_path(args.nmt_dir or inference.get("nmt_dir"))
+    eegnet_json = resolve_repo_path(args.eegnet_json or inference.get("eegnet_json"))
+    output_dir = resolve_repo_path(args.output_dir or inference.get("output"))
+    if output_dir is None:
+        raise ValueError("inference.output must be set in the YAML config")
+    threshold = (
+        args.classification_threshold
+        if args.classification_threshold is not None
+        else evaluation.get("classification_threshold", 0.5)
+    )
+    max_samples = args.max_samples if args.max_samples is not None else inference.get("max_samples")
+    device_name = args.device if args.device is not None else inference.get("device")
 
     if args.dry_run:
         print(f"config={args.config}")
-        print(f"ckpt_ft={args.ckpt_ft}")
-        print(f"ckpt_freeze_backbone={args.ckpt_freeze_backbone}")
-        print(f"ckpt_lora={args.ckpt_lora}")
-        print(f"eegnet_json={args.eegnet_json}")
-        print(f"nmt_dir={args.nmt_dir}")
+        for strategy, path in checkpoints.items():
+            print(f"checkpoint.{strategy}={path} exists={bool(path and path.is_file())}")
+        print(f"eegnet_json={eegnet_json} exists={bool(eegnet_json and eegnet_json.is_file())}")
+        print(f"nmt_dir={nmt_dir} exists={bool(nmt_dir and nmt_dir.is_dir())}")
         print(f"output_dir={output_dir}")
+        print(f"max_samples={max_samples}")
+        print(f"device={device_name or 'auto'}")
         return
 
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    dataset = NmtPickleDataset(args.nmt_dir, max_samples=args.max_samples)
-    batch_size = args.batch_size or config.get("loader", {}).get("batch_size", 64)
-    eegnet_metrics = normalize_eegnet_nmt_metrics(load_eegnet_nmt_results(args.eegnet_json))
-    model_ft = load_checkpoint(build_model(), args.ckpt_ft)
+    validate_inference_inputs(nmt_dir, eegnet_json, checkpoints)
+    device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
+    dataset = NmtPickleDataset(nmt_dir, max_samples=max_samples)
+    batch_size = (
+        args.batch_size if args.batch_size is not None
+        else inference.get("batch_size", config.get("loader", {}).get("batch_size", 64))
+    )
+    eegnet_metrics, eegnet_clean = load_eegnet_results(eegnet_json)
+    model_ft = load_checkpoint(build_model(), checkpoints["full_finetune"])
+    ft_clean = load_clean_tuab_metrics(
+        checkpoints["full_finetune"], model_ft._benchmark_checkpoint_epoch
+    )
     ft_metrics = run_nmt_inference(model_ft, dataset, device, batch_size, float(threshold))
     results = {
         "description": (
@@ -311,14 +398,14 @@ def main():
             "NMT pickles are scaled and patched like the original LaBraM OOD script."
         ),
         "ft": {
-            "tuab_clean": CLEAN_TUAB["ft"],
+            "tuab_clean": ft_clean,
             "nmt_ood": ft_metrics,
-            "checkpoint": args.ckpt_ft,
+            "checkpoint": str(checkpoints["full_finetune"]),
         },
         "eegnet": {
-            "tuab_clean": CLEAN_TUAB["eegnet"],
+            "tuab_clean": eegnet_clean,
             "nmt_ood": eegnet_metrics,
-            "source_json": str(args.eegnet_json),
+            "source_json": str(eegnet_json),
         },
         "comparison": {
             "eegnet_minus_ft_test_accuracy": metric_delta(eegnet_metrics, ft_metrics, "test_accuracy"),
@@ -327,13 +414,15 @@ def main():
             "eegnet_minus_ft_test_pr_auc": metric_delta(eegnet_metrics, ft_metrics, "test_pr_auc"),
         },
     }
-    if args.ckpt_lora:
-        model_lora = load_strategy_checkpoint(args.ckpt_lora, "lora", output_dir)
+    if checkpoints["lora"]:
+        model_lora = load_strategy_checkpoint(checkpoints["lora"], "lora", output_dir)
         lora_metrics = run_nmt_inference(model_lora, dataset, device, batch_size, float(threshold))
         results["lora"] = {
-            "tuab_clean": CLEAN_TUAB["lora"],
+            "tuab_clean": load_clean_tuab_metrics(
+                checkpoints["lora"], model_lora._benchmark_checkpoint_epoch
+            ),
             "nmt_ood": lora_metrics,
-            "checkpoint": args.ckpt_lora,
+            "checkpoint": str(checkpoints["lora"]),
         }
         results["comparison"].update({
             "lora_minus_ft_test_accuracy": metric_delta(lora_metrics, ft_metrics, "test_accuracy"),
@@ -347,15 +436,28 @@ def main():
             "lora_minus_eegnet_test_roc_auc": metric_delta(lora_metrics, eegnet_metrics, "test_roc_auc"),
             "lora_minus_eegnet_test_pr_auc": metric_delta(lora_metrics, eegnet_metrics, "test_pr_auc"),
         })
-    if args.ckpt_freeze_backbone:
-        model_freeze = load_strategy_checkpoint(args.ckpt_freeze_backbone, "freeze_backbone", output_dir)
+    if checkpoints["freeze_backbone"]:
+        model_freeze = load_strategy_checkpoint(
+            checkpoints["freeze_backbone"], "freeze_backbone", output_dir
+        )
         freeze_metrics = run_nmt_inference(model_freeze, dataset, device, batch_size, float(threshold))
         results["freeze_backbone"] = {
+            "tuab_clean": load_clean_tuab_metrics(
+                checkpoints["freeze_backbone"], model_freeze._benchmark_checkpoint_epoch
+            ),
             "nmt_ood": freeze_metrics,
-            "checkpoint": args.ckpt_freeze_backbone,
+            "checkpoint": str(checkpoints["freeze_backbone"]),
         }
         add_metric_deltas(results["comparison"], "freeze_backbone", freeze_metrics, "ft", ft_metrics)
         add_metric_deltas(results["comparison"], "freeze_backbone", freeze_metrics, "eegnet", eegnet_metrics)
+    if "lora" in results and "freeze_backbone" in results:
+        add_metric_deltas(
+            results["comparison"],
+            "lora",
+            results["lora"]["nmt_ood"],
+            "freeze_backbone",
+            results["freeze_backbone"]["nmt_ood"],
+        )
     write_nmt_outputs(output_dir, results)
     print(f"Wrote {output_dir / 'nmt_ood_results.json'}")
     print(f"Wrote {output_dir / 'log.txt'}")

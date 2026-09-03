@@ -302,8 +302,8 @@ def get_args():
     parser.add_argument('--head_weight_decay', type=float, default=0.01, metavar='WD',
                         help='Weight decay specifically for head params in freeze_backbone_regularized (default: 0.01)')
     
-    parser.add_argument('--lora_rank', type=int, default=8, metavar='RANK',
-                        help='LoRA rank (default: 8)')
+    parser.add_argument('--lora_rank', type=int, default=2, metavar='RANK',
+                        help='LoRA attention/MLP rank (default: 2; temporal Conv2d remains rank 4)')
     parser.add_argument('--lora_alpha', type=float, default=8.0, metavar='ALPHA',
                         help='LoRA alpha scaling factor (default: 8.0)')
     parser.add_argument('--lora_layers', type=str, default='all', metavar='LAYERS_MODE',
